@@ -1,0 +1,355 @@
+2026-09-21 17:56:26  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-21 17:56:26  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-21 17:56:26  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-21 17:56:47  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-21 17:56:47  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-21 17:56:48  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-21 17:56:53  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-21 17:56:53  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-21 17:56:53  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-21 17:57:34  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-21 17:57:34  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-21 17:57:34  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-21 17:57:35  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-21 17:57:35  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-21 17:57:58  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-21 17:57:58  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 19:44:23  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 19:44:23  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 19:44:31  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 19:44:31  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 19:44:34  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 19:44:34  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 19:44:35  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 19:44:35  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 19:44:35  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-24 19:45:29  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 19:45:29  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 19:45:29  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 19:45:29  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 19:45:30  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-24 19:45:33  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 19:45:33  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 19:58:30  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 19:58:30  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 19:58:30  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 19:58:30  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 19:58:30  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-24 19:59:00  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 19:59:00  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 19:59:00  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 19:59:00  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 19:59:00  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-24 19:59:04  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 19:59:04  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 22:06:18  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 22:06:18  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 22:06:23  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 22:06:23  WARNING  ATTEST_FAILED  host=TestEndpoint-01  ip=127.0.0.1  err=Agent disconnected
+2026-09-24 22:08:25  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 22:08:25  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 22:08:25  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 22:08:25  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=253c9ebdc6b77608d857bcb6c907e952d856a1ddb22f476e79ebec0633677882
+2026-09-24 22:08:25  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 22:08:25  WARNING  ATTEST_MISMATCH  host=Simon_Desktop  ip=192.168.2.127  got=848407e97c7c4c212e0af5afdcfb34fe28367ad853ca259206d689d06329a65d  expected=6be315af7961256d2a717744d2c56af6f3b3232e74a782e564ebb9920aec8ec0
+2026-09-24 22:08:25  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-24 22:08:38  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 22:08:39  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 22:08:39  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 22:08:39  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=253c9ebdc6b77608d857bcb6c907e952d856a1ddb22f476e79ebec0633677882
+2026-09-24 22:08:39  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:08:39  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 22:08:39  WARNING  ATTEST_MISMATCH  host=Simon_Desktop  ip=192.168.2.127  got=848407e97c7c4c212e0af5afdcfb34fe28367ad853ca259206d689d06329a65d  expected=6be315af7961256d2a717744d2c56af6f3b3232e74a782e564ebb9920aec8ec0
+2026-09-24 22:08:39  WARNING  SECURITY_EVENT  host=Simon_Desktop  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:08:39  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-24 22:09:06  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 22:09:06  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 22:09:06  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 22:09:06  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=253c9ebdc6b77608d857bcb6c907e952d856a1ddb22f476e79ebec0633677882
+2026-09-24 22:09:06  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:09:06  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 22:09:06  WARNING  ATTEST_MISMATCH  host=Simon_Desktop  ip=192.168.2.127  got=848407e97c7c4c212e0af5afdcfb34fe28367ad853ca259206d689d06329a65d  expected=6be315af7961256d2a717744d2c56af6f3b3232e74a782e564ebb9920aec8ec0
+2026-09-24 22:09:06  WARNING  SECURITY_EVENT  host=Simon_Desktop  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:09:07  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-24 22:09:07  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-24 22:09:32  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 22:09:32  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 22:09:32  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 22:09:32  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=253c9ebdc6b77608d857bcb6c907e952d856a1ddb22f476e79ebec0633677882
+2026-09-24 22:09:32  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:09:32  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 22:09:32  WARNING  ATTEST_MISMATCH  host=Simon_Desktop  ip=192.168.2.127  got=eca584eb752feea12d1c7c8296be849597ec9b9506eac2b3ee340b41b5370738  expected=6be315af7961256d2a717744d2c56af6f3b3232e74a782e564ebb9920aec8ec0
+2026-09-24 22:09:32  WARNING  SECURITY_EVENT  host=Simon_Desktop  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:09:32  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-24 22:09:32  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-24 22:09:49  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 22:09:49  WARNING  ATTEST_MISMATCH  host=SIMON_DESKTOP  ip=192.168.56.1  got=d289a3c0c032c69dab1ea4b6dbc8baa4e0983583cf61b5d6592bd51b025a58af  expected=6be315af7961256d2a717744d2c56af6f3b3232e74a782e564ebb9920aec8ec0
+2026-09-24 22:09:49  WARNING  SECURITY_EVENT  host=SIMON_DESKTOP  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:09:50  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 22:10:28  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 22:10:28  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=d289a3c0c032c69d
+2026-09-24 22:10:30  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 22:10:33  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 22:10:33  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 22:10:34  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 22:10:34  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=eca584eb752feea12d1c7c8296be849597ec9b9506eac2b3ee340b41b5370738
+2026-09-24 22:10:34  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:10:34  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 22:10:34  WARNING  ATTEST_MISMATCH  host=Simon_Desktop  ip=192.168.2.127  got=eca584eb752feea12d1c7c8296be849597ec9b9506eac2b3ee340b41b5370738  expected=d289a3c0c032c69dab1ea4b6dbc8baa4e0983583cf61b5d6592bd51b025a58af
+2026-09-24 22:10:34  WARNING  SECURITY_EVENT  host=Simon_Desktop  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:10:34  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-24 22:10:34  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-24 22:28:15  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 22:28:15  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 22:28:15  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 22:28:15  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=54691b864c616e3932b7b52caccbbe161a5b7a3f329c7935672fb0d22e7000e8
+2026-09-24 22:28:15  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:28:15  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 22:28:15  WARNING  ATTEST_MISMATCH  host=Simon_Desktop  ip=192.168.2.127  got=54691b864c616e3932b7b52caccbbe161a5b7a3f329c7935672fb0d22e7000e8  expected=c81fa8f456a9c6d593323ea7ea5bf1e6011c48d99e4dc71c4ee109e8c1e3d4b0
+2026-09-24 22:28:15  WARNING  SECURITY_EVENT  host=Simon_Desktop  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:28:15  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-24 22:28:15  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-24 22:28:21  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 22:28:21  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=c81fa8f456a9c6d5
+2026-09-24 22:28:22  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 22:33:54  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 22:33:55  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 22:33:55  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 22:33:55  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=2b5d3a64db1771cb29ca28ad0ea855f913f3e9b11c9b7803cf6a68f59ae2ff2d
+2026-09-24 22:33:55  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:33:55  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 22:33:55  WARNING  ATTEST_MISMATCH  host=Simon_Desktop  ip=192.168.2.127  got=2b5d3a64db1771cb29ca28ad0ea855f913f3e9b11c9b7803cf6a68f59ae2ff2d  expected=40c812cf4fda5b9a9ac5cb8af908ce0a88f87339126d82e07d3dc177df89c1f7
+2026-09-24 22:33:55  WARNING  SECURITY_EVENT  host=Simon_Desktop  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:33:55  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-24 22:33:55  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-24 22:34:01  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 22:34:01  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=40c812cf4fda5b9a
+2026-09-24 22:34:02  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 22:42:13  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 22:42:13  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 22:42:13  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 22:42:13  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=2b5d3a64db1771cb29ca28ad0ea855f913f3e9b11c9b7803cf6a68f59ae2ff2d
+2026-09-24 22:42:13  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:42:13  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 22:42:13  WARNING  ATTEST_MISMATCH  host=Simon_Desktop  ip=192.168.2.127  got=2b5d3a64db1771cb29ca28ad0ea855f913f3e9b11c9b7803cf6a68f59ae2ff2d  expected=40c812cf4fda5b9a9ac5cb8af908ce0a88f87339126d82e07d3dc177df89c1f7
+2026-09-24 22:42:13  WARNING  SECURITY_EVENT  host=Simon_Desktop  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:42:13  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-24 22:42:13  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-24 22:42:18  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 22:42:18  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=40c812cf4fda5b9a
+2026-09-24 22:42:19  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 22:53:59  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 22:53:59  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 22:53:59  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 22:53:59  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=7acb6fb5375e4cde59030271516b888ed9cb24251d53f102c832dcee386193e0
+2026-09-24 22:53:59  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:53:59  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 22:53:59  WARNING  ATTEST_MISMATCH  host=Simon_Desktop  ip=192.168.2.127  got=7acb6fb5375e4cde59030271516b888ed9cb24251d53f102c832dcee386193e0  expected=151a731888998e35ff28bbc17d8fc77bdd907923f4d477e585a9387f217586e7
+2026-09-24 22:53:59  WARNING  SECURITY_EVENT  host=Simon_Desktop  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:53:59  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-24 22:53:59  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-24 22:54:10  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 22:54:10  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=151a731888998e35
+2026-09-24 22:54:12  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 22:54:32  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 22:54:32  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 22:54:32  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 22:54:32  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=7acb6fb5375e4cde59030271516b888ed9cb24251d53f102c832dcee386193e0
+2026-09-24 22:54:32  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:54:32  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 22:54:32  WARNING  ATTEST_MISMATCH  host=Simon_Desktop  ip=192.168.2.127  got=7acb6fb5375e4cde59030271516b888ed9cb24251d53f102c832dcee386193e0  expected=151a731888998e35ff28bbc17d8fc77bdd907923f4d477e585a9387f217586e7
+2026-09-24 22:54:32  WARNING  SECURITY_EVENT  host=Simon_Desktop  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 22:54:32  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-24 22:54:32  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-24 22:54:37  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 22:54:37  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=151a731888998e35
+2026-09-24 22:54:38  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 23:08:20  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 23:08:20  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 23:08:20  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 23:08:20  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=7acb6fb5375e4cde59030271516b888ed9cb24251d53f102c832dcee386193e0
+2026-09-24 23:08:20  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 23:08:20  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 23:08:20  WARNING  ATTEST_MISMATCH  host=Simon_Desktop  ip=192.168.2.127  got=7acb6fb5375e4cde59030271516b888ed9cb24251d53f102c832dcee386193e0  expected=151a731888998e35ff28bbc17d8fc77bdd907923f4d477e585a9387f217586e7
+2026-09-24 23:08:20  WARNING  SECURITY_EVENT  host=Simon_Desktop  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 23:08:20  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-24 23:08:20  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-24 23:08:55  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 23:08:55  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=151a731888998e35
+2026-09-24 23:08:56  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 23:20:58  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 23:20:58  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 23:20:58  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 23:20:58  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=7acb6fb5375e4cde59030271516b888ed9cb24251d53f102c832dcee386193e0
+2026-09-24 23:20:58  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 23:20:58  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 23:20:58  WARNING  ATTEST_MISMATCH  host=Simon_Desktop  ip=192.168.2.127  got=7cbad7c4edc7b5f2d6de02dda89efa911cbf4d7c266b71792e6533cdbf5a6dc5  expected=151a731888998e35ff28bbc17d8fc77bdd907923f4d477e585a9387f217586e7
+2026-09-24 23:20:58  WARNING  SECURITY_EVENT  host=Simon_Desktop  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 23:20:58  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-24 23:20:58  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-24 23:21:03  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 23:21:03  WARNING  ATTEST_MISMATCH  host=SIMON_DESKTOP  ip=192.168.56.1  got=f6989a31abbd58c8aeb2ed3fc447ad569b39df643225f48ef109a168a63839e8  expected=151a731888998e35ff28bbc17d8fc77bdd907923f4d477e585a9387f217586e7
+2026-09-24 23:21:03  WARNING  SECURITY_EVENT  host=SIMON_DESKTOP  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 23:21:04  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 23:21:35  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 23:21:35  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=f6989a31abbd58c8
+2026-09-24 23:21:36  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 23:57:55  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-24 23:57:55  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-24 23:57:55  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-24 23:57:55  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=7cbad7c4edc7b5f2d6de02dda89efa911cbf4d7c266b71792e6533cdbf5a6dc5
+2026-09-24 23:57:55  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-24 23:57:55  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 23:57:55  INFO     ATTEST_OK  host=Simon_Desktop  ip=192.168.2.127  hash=7cbad7c4edc7b5f2
+2026-09-24 23:57:55  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-24 23:57:55  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-24 23:58:19  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 23:58:19  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 23:58:19  WARNING  ATTEST_FAILED  host=SIMON_DESKTOP  ip=192.168.56.1  err=Agent disconnected
+2026-09-24 23:58:21  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 23:58:21  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 23:58:21  WARNING  ATTEST_FAILED  host=SIMON_DESKTOP  ip=192.168.56.1  err=Agent disconnected
+2026-09-24 23:58:24  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 23:58:24  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 23:58:24  WARNING  ATTEST_FAILED  host=SIMON_DESKTOP  ip=192.168.56.1  err=Agent disconnected
+2026-09-24 23:58:26  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 23:58:26  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 23:58:26  WARNING  ATTEST_FAILED  host=SIMON_DESKTOP  ip=192.168.56.1  err=Agent disconnected
+2026-09-24 23:58:28  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 23:58:28  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 23:58:28  WARNING  ATTEST_FAILED  host=SIMON_DESKTOP  ip=192.168.56.1  err=Agent disconnected
+2026-09-24 23:58:30  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-24 23:58:30  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-24 23:58:30  WARNING  ATTEST_FAILED  host=SIMON_DESKTOP  ip=192.168.56.1  err=Agent disconnected
+2026-09-24 23:58:30  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-24 23:58:30  INFO     ATTEST_OK  host=Simon_Desktop  ip=192.168.2.127  hash=9415f2b30b94e470
+2026-09-24 23:58:33  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-25 00:00:22  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-25 00:00:22  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-25 00:00:22  WARNING  ATTEST_FAILED  host=SIMON_DESKTOP  ip=192.168.56.1  err=Agent disconnected
+2026-09-25 00:00:25  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-25 00:00:25  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-25 00:00:25  WARNING  ATTEST_FAILED  host=SIMON_DESKTOP  ip=192.168.56.1  err=Agent disconnected
+2026-09-25 00:00:27  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-25 00:00:27  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-25 00:00:27  WARNING  ATTEST_FAILED  host=SIMON_DESKTOP  ip=192.168.56.1  err=Agent disconnected
+2026-09-25 00:00:29  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-25 00:00:29  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-25 00:00:29  WARNING  ATTEST_FAILED  host=SIMON_DESKTOP  ip=192.168.56.1  err=Agent disconnected
+2026-09-25 00:00:31  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-25 00:00:31  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-25 00:00:31  WARNING  ATTEST_FAILED  host=SIMON_DESKTOP  ip=192.168.56.1  err=Agent disconnected
+2026-09-25 00:00:32  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-25 00:00:32  INFO     ATTEST_OK  host=Simon_Desktop  ip=192.168.2.127  hash=9415f2b30b94e470
+2026-09-25 00:00:35  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-25 00:06:26  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-25 00:06:26  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=8cc1710af97073fb
+2026-09-25 00:06:28  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-25 00:06:28  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-25 00:06:28  INFO     ATTEST_OK  host=Simon_Desktop  ip=192.168.2.127  hash=9415f2b30b94e470
+2026-09-25 00:06:31  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-25 00:06:40  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-25 00:06:40  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=f6989a31abbd58c8
+2026-09-25 00:06:42  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-25 00:06:45  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-25 00:06:45  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-25 00:06:46  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-25 00:06:46  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=7cbad7c4edc7b5f2d6de02dda89efa911cbf4d7c266b71792e6533cdbf5a6dc5
+2026-09-25 00:06:46  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-25 00:06:46  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-25 00:06:46  INFO     ATTEST_OK  host=Simon_Desktop  ip=192.168.2.127  hash=7cbad7c4edc7b5f2
+2026-09-25 00:06:46  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-25 00:06:46  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-25 00:09:14  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-25 00:09:14  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=8cc1710af97073fb
+2026-09-25 00:09:16  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-25 00:09:16  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-25 00:09:16  INFO     ATTEST_OK  host=Simon_Desktop  ip=192.168.2.127  hash=9415f2b30b94e470
+2026-09-25 00:09:19  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-25 00:09:23  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-25 00:09:23  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=f6989a31abbd58c8
+2026-09-25 00:09:24  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-25 00:09:28  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-25 00:09:28  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-25 00:09:28  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-25 00:09:28  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=7cbad7c4edc7b5f2d6de02dda89efa911cbf4d7c266b71792e6533cdbf5a6dc5
+2026-09-25 00:09:28  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-25 00:09:28  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-25 00:09:28  INFO     ATTEST_OK  host=Simon_Desktop  ip=192.168.2.127  hash=7cbad7c4edc7b5f2
+2026-09-25 00:09:28  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-25 00:09:28  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-25 00:31:14  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-25 00:31:15  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-25 00:31:15  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-25 00:31:15  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=dacbb1c185db859ffcf8ff34b865d0c0afd2237a5dd40a32836b24ccf3287dd1
+2026-09-25 00:31:15  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-25 00:31:15  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-25 00:31:15  INFO     ATTEST_OK  host=Simon_Desktop  ip=192.168.2.127  hash=dacbb1c185db859f
+2026-09-25 00:31:15  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-25 00:31:15  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-25 00:31:30  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-25 00:31:30  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=8cc1710af97073fb
+2026-09-25 00:31:33  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-25 00:31:33  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-25 00:31:33  INFO     ATTEST_OK  host=Simon_Desktop  ip=192.168.2.127  hash=8faec772de0e21db
+2026-09-25 00:31:37  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-25 00:31:42  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-25 00:31:42  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=78be84a5f5727d53
+2026-09-25 00:31:43  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-25 00:31:50  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-25 00:31:50  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-25 00:31:50  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-25 00:31:50  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=dacbb1c185db859ffcf8ff34b865d0c0afd2237a5dd40a32836b24ccf3287dd1
+2026-09-25 00:31:50  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-25 00:31:50  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-25 00:31:50  INFO     ATTEST_OK  host=Simon_Desktop  ip=192.168.2.127  hash=dacbb1c185db859f
+2026-09-25 00:31:50  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-25 00:31:50  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-25 00:32:25  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-25 00:32:25  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=8cc1710af97073fb
+2026-09-25 00:32:27  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-25 00:32:27  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-25 00:32:27  INFO     ATTEST_OK  host=Simon_Desktop  ip=192.168.2.127  hash=8faec772de0e21db
+2026-09-25 00:32:31  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-25 00:32:36  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-25 00:32:36  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=78be84a5f5727d53
+2026-09-25 00:32:37  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-25 00:32:41  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-25 00:32:41  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-25 00:32:41  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-25 00:32:41  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=dacbb1c185db859ffcf8ff34b865d0c0afd2237a5dd40a32836b24ccf3287dd1
+2026-09-25 00:32:41  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-25 00:32:42  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-25 00:32:42  INFO     ATTEST_OK  host=Simon_Desktop  ip=192.168.2.127  hash=dacbb1c185db859f
+2026-09-25 00:32:42  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-25 00:32:42  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-25 00:39:08  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-25 00:39:08  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-25 00:39:08  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-25 00:39:08  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=dacbb1c185db859ffcf8ff34b865d0c0afd2237a5dd40a32836b24ccf3287dd1
+2026-09-25 00:39:08  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-25 00:39:09  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-25 00:39:09  INFO     ATTEST_OK  host=Simon_Desktop  ip=192.168.2.127  hash=8faec772de0e21db
+2026-09-25 00:39:11  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-25 00:39:11  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-25 00:39:21  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-25 00:39:21  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=8cc1710af97073fb
+2026-09-25 00:39:24  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-25 00:41:29  INFO     CONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1  os=Linux 6.1-amd64  admin=True
+2026-09-25 00:41:30  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=fim  sev=CRITICAL  title=FIM MODIFIED: /etc/shadow
+2026-09-25 00:41:30  INFO     DISCONNECT  user=sec_tester  host=TestEndpoint-01  ip=127.0.0.1
+2026-09-25 00:41:30  WARNING  ATTEST_MISMATCH  host=TestEndpoint-01  ip=127.0.0.1  got=dummy_test_hash  expected=8faec772de0e21dbb035b6bfa6350d95b63e3362c3c6932f77bff15b53038434
+2026-09-25 00:41:30  WARNING  SECURITY_EVENT  host=TestEndpoint-01  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent Code Mismatch
+2026-09-25 00:41:30  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-25 00:41:30  INFO     ATTEST_OK  host=Simon_Desktop  ip=192.168.2.127  hash=8faec772de0e21db
+2026-09-25 00:41:32  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
+2026-09-25 00:41:32  WARNING  SECURITY_EVENT  host=TamperHost  subsystem=tamper  sev=CRITICAL  title=🚨 ANTI-TAMPER: Agent File Modified
+2026-09-25 00:41:35  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-25 00:41:35  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=8cc1710af97073fb
+2026-09-25 00:41:37  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-25 00:41:40  INFO     CONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1  os=Microsoft Windows 11 Home  admin=False
+2026-09-25 00:41:40  INFO     ATTEST_OK  host=SIMON_DESKTOP  ip=192.168.56.1  hash=8cc1710af97073fb
+2026-09-25 00:41:43  INFO     DISCONNECT  user=SIMON_DESKTOP\simon  host=SIMON_DESKTOP  ip=192.168.56.1
+2026-09-25 00:41:43  INFO     CONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127  os=Windows 11  admin=False
+2026-09-25 00:41:43  INFO     ATTEST_OK  host=Simon_Desktop  ip=192.168.2.127  hash=8faec772de0e21db
+2026-09-25 00:41:47  INFO     DISCONNECT  user=simon  host=Simon_Desktop  ip=192.168.2.127
