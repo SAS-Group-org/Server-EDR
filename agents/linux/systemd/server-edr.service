@@ -1,0 +1,28 @@
+[Unit]
+Description=Secure Endpoint Detection, Response & Defense Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/server-edr
+ExecStart=/usr/bin/python3 /opt/server-edr/agent_core.py
+Restart=always
+RestartSec=5s
+
+# Security and Isolation
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+
+# Resource Limits
+CPUQuota=30%
+MemoryMax=512M
+TasksMax=100
+
+EnvironmentFile=-/etc/server-edr/agent.env
+KillMode=mixed
+TimeoutStopSec=10s
+
+[Install]
+WantedBy=multi-user.target
