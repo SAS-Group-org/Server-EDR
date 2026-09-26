@@ -121,6 +121,7 @@ def get_secure_stream(sock):
         return sock
     
     context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
     tls_stream = context.wrap_socket(sock, server_hostname=SERVER_HOST)
