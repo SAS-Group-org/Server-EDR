@@ -18,6 +18,8 @@ from concurrent.futures import ThreadPoolExecutor
 from modules import (
     SERVER_HOST, SERVER_PORT, PSK, CERT_FINGERPRINT, USE_TLS, RECONNECT_SECS,
     FIM_ENABLED, FIM_CHECK_INTERVAL_SECS, AUTO_INSTALL_OPENEDR,
+    load_agent_config, validate_agent_config, save_agent_config, apply_agent_config,
+    check_server_connectivity, DEFAULT_AGENT_CONFIG,
     send_msg, recv_msg, send_event, authenticate, get_secure_stream,
     get_hostname, get_username, get_local_ip, is_root,
     FIMMonitor, USBMonitor, MalwareDefense, OpenEDRIntegration,
@@ -214,12 +216,25 @@ def execute_command_task(cmd, mid, msg, stream, fim_mon, mal_def, response_queue
     response_queue.put(resp)
 
 
-def main():
+def main(config_path: str = None, config_override: dict = None):
+    cfg = load_agent_config(config_path)
+    if config_override:
+        cfg.update({k: v for k, v in config_override.items() if v is not None})
+    apply_agent_config(cfg)
+
+    is_valid, err = validate_agent_config(cfg)
+    if not is_valid:
+        print(f"[!] Warning: Agent configuration validation issue: {err}")
+
+    masked_psk = cfg["psk"][:4] + "..." + cfg["psk"][-4:] if len(cfg.get("psk", "")) > 8 else "***"
     print("[*] Python EDR & Endpoint Defense Agent starting...")
     print(f"[*] Target: {SERVER_HOST}:{SERVER_PORT}")
+    print(f"[*] PSK: {masked_psk}")
     print(f"[*] TLS: {'enabled' if USE_TLS else 'DISABLED'}")
     if CERT_FINGERPRINT:
         print(f"[*] Cert pinning: {CERT_FINGERPRINT[:16]}...")
+    if cfg.get("_config_source"):
+        print(f"[*] Configuration loaded from: {cfg['_config_source']}")
 
     fim_mon = FIMMonitor()
     mal_def = MalwareDefense()
@@ -360,8 +375,22 @@ def _watchdog_supervisor():
     """Supervisor process that auto-respawns the worker agent if killed."""
     import argparse
     parser = argparse.ArgumentParser(description="Endpoint Defense Agent")
+    parser.add_argument("--config", "-c", default=None,
+                        help="Path to injected agent_config.json")
+    parser.add_argument("--server-host", default=None,
+                        help="Override server host")
+    parser.add_argument("--server-port", type=int, default=None,
+                        help="Override server port")
+    parser.add_argument("--psk", default=None,
+                        help="Override pre-shared key")
+    parser.add_argument("--no-tls", action="store_true",
+                        help="Disable TLS")
     parser.add_argument("--no-watchdog", action="store_true",
                         help="Run agent directly without supervisor (for debugging)")
+    parser.add_argument("--validate-config", action="store_true",
+                        help="Validate configuration and exit without connecting")
+    parser.add_argument("--check-connection", action="store_true",
+                        help="Probe connectivity to server endpoint and exit")
     parser.add_argument("--install-openedr", "--install-deps", action="store_true", dest="install_deps",
                         help="Install and configure OpenEDR and endpoint security dependencies")
     args = parser.parse_args()
@@ -372,8 +401,36 @@ def _watchdog_supervisor():
         print(f"[*] Result ({status}):\n{output}")
         return
 
+    overrides = {}
+    if args.server_host:
+        overrides["server_host"] = args.server_host
+    if args.server_port:
+        overrides["server_port"] = args.server_port
+    if args.psk:
+        overrides["psk"] = args.psk
+    if args.no_tls:
+        overrides["use_tls"] = False
+
+    cfg = load_agent_config(args.config)
+    cfg.update(overrides)
+
+    if args.validate_config:
+        is_valid, msg = validate_agent_config(cfg)
+        status_str = "VALID" if is_valid else "INVALID"
+        print(f"[*] Configuration Status: {status_str} ({msg})")
+        print(f"    Host: {cfg['server_host']}:{cfg['server_port']}")
+        masked = cfg['psk'][:4] + "..." + cfg['psk'][-4:] if len(cfg.get('psk', '')) > 8 else "***"
+        print(f"    PSK: {masked}")
+        print(f"    TLS: {cfg['use_tls']}")
+        sys.exit(0 if is_valid else 1)
+
+    if args.check_connection:
+        is_conn, msg = check_server_connectivity(cfg["server_host"], cfg["server_port"])
+        print(f"[*] Endpoint Probe: {msg}")
+        sys.exit(0 if is_conn else 1)
+
     if args.no_watchdog:
-        main()
+        main(config_path=args.config, config_override=overrides)
         return
 
     print("[*] WATCHDOG: Supervisor mode active (PID %d)" % os.getpid())
@@ -401,6 +458,17 @@ def _watchdog_supervisor():
 
     while True:
         cmd = [python_exe, script_path, "--no-watchdog"]
+        if args.config:
+            cmd.extend(["--config", args.config])
+        if args.server_host:
+            cmd.extend(["--server-host", args.server_host])
+        if args.server_port:
+            cmd.extend(["--server-port", str(args.server_port)])
+        if args.psk:
+            cmd.extend(["--psk", args.psk])
+        if args.no_tls:
+            cmd.append("--no-tls")
+
         try:
             active_proc = subprocess.Popen(cmd)
             exit_code = active_proc.wait()
@@ -418,8 +486,7 @@ def _watchdog_supervisor():
             print("[*] WATCHDOG: Worker exited cleanly (code 0). Stopping supervisor.")
             break
 
-        # Non-zero exit = likely killed externally — respawn
-        print(f"[!] WATCHDOG: Worker exited with code {exit_code} — respawning in 3 seconds")
+        print(f"[!] WATCHDOG: Worker exited with code {exit_code} -- respawning in 3 seconds")
         print(f"[!] WATCHDOG: Possible adversary kill or crash detected")
         time.sleep(3)
 

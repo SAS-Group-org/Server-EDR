@@ -144,32 +144,100 @@ def run_test_agent(name, launch_cmd, script_rel_path):
             proc.kill()
         server._sock.close()
 
+
+import unittest
+import tempfile
+import tarfile
+import zipfile
+from agents.linux.package_linux_agent import build_linux_package
+from agents.windows.package_windows_agent import build_windows_package
+
+
+class TestModularAgents(unittest.TestCase):
+    """Automated unit and integration test suite for modular agents and packaging (Issue #29)."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_modular_agents_live_communication(self):
+        """Validates that modular Windows and Linux agents connect, authenticate, and execute defense commands."""
+        cwd = os.path.dirname(os.path.abspath(__file__))
+        win_agent = os.path.join(cwd, "agents", "windows", "Agent-Core.ps1")
+        win_ok = run_test_agent(
+            "Modular Windows Agent (Agent-Core.ps1)",
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", win_agent],
+            win_agent
+        )
+        self.assertTrue(win_ok, "Modular Windows Agent test failed")
+
+        linux_agent = os.path.join(cwd, "agents", "linux", "agent_core.py")
+        linux_ok = run_test_agent(
+            "Modular Linux Agent (agent_core.py)",
+            [sys.executable, linux_agent, "--no-watchdog"],
+            linux_agent
+        )
+        self.assertTrue(linux_ok, "Modular Linux Agent test failed")
+
+    def test_modular_agent_packaging_and_configuration(self):
+        """Issue #29: Validates packaging, injected configuration, and standalone execution of modular agents."""
+        cwd = os.path.dirname(os.path.abspath(__file__))
+
+        # 1. Package Linux Modular Agent
+        linux_tar = os.path.join(self.temp_dir.name, "mod-linux.tar.gz")
+        linux_cfg = {
+            "server": {"host": "127.0.0.1", "port": 4444, "use_tls": False},
+            "auth": {"psk": "mod_linux_psk_token"},
+            "agent": {"group_tag": "modular-linux-fleet", "polling_interval": 6}
+        }
+        res_tar = build_linux_package(linux_tar, config_data=linux_cfg)
+        self.assertTrue(os.path.isfile(res_tar))
+
+        # Extract and verify configuration
+        linux_extract_dir = os.path.join(self.temp_dir.name, "extracted_linux")
+        with tarfile.open(res_tar, "r:gz") as tar:
+            if hasattr(tarfile, "data_filter"):
+                tar.extractall(linux_extract_dir, filter="data")
+            else:
+                tar.extractall(linux_extract_dir)
+
+        deployed_linux_cfg = os.path.join(linux_extract_dir, "server-edr-agent", "agent_config.json")
+        self.assertTrue(os.path.isfile(deployed_linux_cfg))
+        with open(deployed_linux_cfg, "r", encoding="utf-8") as f:
+            cfg_data = json.load(f)
+        self.assertEqual(cfg_data["agent"]["group_tag"], "modular-linux-fleet")
+        self.assertEqual(cfg_data["agent"]["polling_interval"], 6)
+
+        # 2. Package Windows Modular Agent
+        win_zip = os.path.join(self.temp_dir.name, "mod-win.zip")
+        win_cfg = {
+            "server": {"host": "127.0.0.1", "port": 4444, "use_tls": False},
+            "auth": {"psk": "mod_win_psk_token"},
+            "agent": {"group_tag": "modular-win-fleet", "polling_interval": 8}
+        }
+        res_zip = build_windows_package(win_zip, config_data=win_cfg)
+        self.assertTrue(os.path.isfile(res_zip))
+
+        # Extract and verify configuration
+        win_extract_dir = os.path.join(self.temp_dir.name, "extracted_win")
+        with zipfile.ZipFile(res_zip, "r") as zf:
+            zf.extractall(win_extract_dir)
+
+        pkg_root_entry = [d for d in os.listdir(win_extract_dir) if os.path.isdir(os.path.join(win_extract_dir, d))][0]
+        deployed_win_cfg = os.path.join(win_extract_dir, pkg_root_entry, "agent_config.json")
+        self.assertTrue(os.path.isfile(deployed_win_cfg))
+        with open(deployed_win_cfg, "r", encoding="utf-8") as f:
+            cfg_data_win = json.load(f)
+        self.assertEqual(cfg_data_win["agent"]["group_tag"], "modular-win-fleet")
+        self.assertEqual(cfg_data_win["agent"]["polling_interval"], 8)
+
+
 def main():
-    results = {}
-    
-    cwd = os.path.dirname(os.path.abspath(__file__))
-    win_agent = os.path.join(cwd, "agents", "windows", "Agent-Core.ps1")
-    results["Modular Windows Agent"] = run_test_agent(
-        "Modular Windows Agent (Agent-Core.ps1)",
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", win_agent],
-        win_agent
-    )
+    unittest.main()
 
-    # 2. Modular Linux Agent
-    results["Modular Linux Agent"] = run_test_agent(
-        "Modular Linux Agent (agent_core.py)",
-        [sys.executable, "agents/linux/agent_core.py", "--no-watchdog"],
-        "agents/linux/agent_core.py"
-    )
-
-    print("="*60)
-    print("MODULAR AGENT TEST RESULTS SUMMARY:")
-    for k, v in results.items():
-        print(f"  {k}: {'PASS' if v else 'FAIL'}")
-    print("="*60)
-
-    if not all(results.values()):
-        sys.exit(1)
 
 if __name__ == "__main__":
     main()
+

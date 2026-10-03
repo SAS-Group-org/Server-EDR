@@ -14,12 +14,26 @@ echo "[*] Removing systemd service..."
 rm -f /etc/systemd/system/server-edr.service
 systemctl daemon-reload
 
-echo "[*] Do you want to remove agent files and config? (y/N)"
-read -r response
+FORCE=0
+for arg in "$@"; do
+    if [[ "$arg" == "-y" || "$arg" == "--yes" || "$arg" == "--force" ]]; then
+        FORCE=1
+    fi
+done
+
+if [[ "$FORCE" -eq 1 ]]; then
+    response="y"
+else
+    echo "[*] Do you want to remove agent files and config? (y/N)"
+    read -r response
+fi
+
 if [[ "$response" =~ ^([yY][eE][sS]|[yY])+$ ]]; then
-    echo "[*] Removing /opt/server-edr and /etc/server-edr..."
+    echo "[*] Removing /opt/server-edr, /etc/sas-edr, and /etc/server-edr..."
     rm -rf /opt/server-edr
+    rm -rf /etc/sas-edr
     rm -rf /etc/server-edr
+    rm -rf /var/log/server-edr
 else
     echo "[*] Retaining agent files and config."
 fi

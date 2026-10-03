@@ -1,0 +1,14 @@
+{
+  "server_host": "127.0.0.1",
+  "server_port": 4444,
+  "psk": "PASTE_PSK_HERE",
+  "cert_fingerprint": "",
+  "use_tls": true,
+  "reconnect_secs": 10,
+  "fim_enabled": true,
+  "fim_check_interval_secs": 30,
+  "dlp_enabled": true,
+  "dlp_block_transfers": false,
+  "openedr_log_path": "/var/log/edrsvc/output_events",
+  "auto_install_openedr": false
+}

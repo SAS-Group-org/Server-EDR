@@ -8,6 +8,13 @@ $CoreScript   = Join-Path $WindowsAgent "Agent-Core.ps1"
 $LogDir       = "$env:ProgramData\Server-EDR"
 $LogFile      = Join-Path $LogDir "service.log"
 
+$ConfigPath   = Join-Path $LogDir "agent_config.json"
+if (-not (Test-Path $ConfigPath)) {
+    if (Test-Path (Join-Path $WindowsAgent "agent_config.json")) {
+        $ConfigPath = Join-Path $WindowsAgent "agent_config.json"
+    }
+}
+
 if (-not (Test-Path $LogDir)) {
     try { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null } catch {}
 }
@@ -22,6 +29,9 @@ function Log-Service {
 
 Log-Service "Server-EDR Service Wrapper starting (PID: $PID)"
 Log-Service "Core Script: $CoreScript"
+if (Test-Path $ConfigPath) {
+    Log-Service "Config File: $ConfigPath"
+}
 
 if (-not (Test-Path $CoreScript)) {
     Log-Service "ERROR: Agent-Core.ps1 not found at $CoreScript"
@@ -38,9 +48,14 @@ Register-EngineEvent -SourceIdentifier ([System.Management.Automation.PsEngineEv
 while ($running) {
     Log-Service "Launching Agent-Core.ps1 process..."
     try {
+        $coreArgs = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$CoreScript`""
+        if (Test-Path $ConfigPath) {
+            $coreArgs += " -ConfigPath `"$ConfigPath`""
+        }
+
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = "powershell.exe"
-        $psi.Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$CoreScript`""
+        $psi.Arguments = $coreArgs
         $psi.WorkingDirectory = $WindowsAgent
         $psi.UseShellExecute = $false
         $psi.RedirectStandardOutput = $true

@@ -1,12 +1,13 @@
 [Unit]
 Description=Secure Endpoint Detection, Response & Defense Agent
-After=network.target
+After=network.target network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/server-edr
-ExecStart=/usr/bin/python3 /opt/server-edr/agent_core.py
+WorkingDirectory=/opt/server-edr/agent
+ExecStart=/usr/bin/python3 -u /opt/server-edr/agent/agent_core.py --config /etc/sas-edr/agent_config.json
 Restart=always
 RestartSec=5s
 
@@ -20,6 +21,9 @@ CPUQuota=30%
 MemoryMax=512M
 TasksMax=100
 
+EnvironmentFile=-/etc/sas-edr/server-edr.env
+EnvironmentFile=-/etc/sas-edr/agent.env
+EnvironmentFile=-/etc/server-edr/server-edr.env
 EnvironmentFile=-/etc/server-edr/agent.env
 KillMode=mixed
 TimeoutStopSec=10s

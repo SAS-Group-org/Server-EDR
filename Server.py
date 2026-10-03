@@ -18,24 +18,36 @@ Features:
 from __future__ import annotations
 
 import argparse, base64, collections, hashlib, hmac as _hmac, json, logging, os, queue, re
-import secrets, socket, ssl, struct, sys, threading, time, uuid
+import secrets, socket, ssl, stat, struct, sys, threading, time, uuid
 import tkinter as tk
 from tkinter import ttk, scrolledtext, filedialog, messagebox
-from datetime import datetime
+from datetime import datetime, timezone
 from ipaddress import ip_address, ip_network, IPv4Network
 from logging.handlers import RotatingFileHandler
 from typing import Callable, Dict, List, Optional, Tuple, Any
 
+try:
+    from agents.linux.package_linux_agent import build_linux_package
+except ImportError:
+    build_linux_package = None
+
+try:
+    from agents.windows.package_windows_agent import build_windows_package
+except ImportError:
+    build_windows_package = None
+
 # ─────────────────────────────────────────────────────────────
-DEFAULT_HOST      = "0.0.0.0"
-DEFAULT_PORT      = 4444
-MAX_MSG_BYTES     = 50 * 1024 * 1024   # 50 MB hard cap — prevents memory DoS
-AUTH_TIMEOUT_SECS = 15                  # seconds to complete TLS + HMAC handshake
-CERT_FILE         = "edr_server.crt" if os.path.exists("edr_server.crt") or not os.path.exists("rat_server.crt") else "rat_server.crt"
-KEY_FILE          = "edr_server.key" if os.path.exists("edr_server.key") or not os.path.exists("rat_server.key") else "rat_server.key"
-PSK_FILE          = "edr_psk.txt" if os.path.exists("edr_psk.txt") or not os.path.exists("rat_psk.txt") else "rat_psk.txt"
-FPRINT_FILE       = "edr_fingerprint.txt" if os.path.exists("edr_fingerprint.txt") or not os.path.exists("rat_fingerprint.txt") else "rat_fingerprint.txt"
-LOG_FILE          = "edr_audit.log"
+DEFAULT_HOST            = "0.0.0.0"
+DEFAULT_PORT            = 4444
+DEFAULT_CONFIG_FILE     = "server_config.json"
+DEFAULT_ENROLLMENT_FILE = "edr_enrollment.json"
+MAX_MSG_BYTES           = 50 * 1024 * 1024   # 50 MB hard cap — prevents memory DoS
+AUTH_TIMEOUT_SECS       = 15                  # seconds to complete TLS + HMAC handshake
+CERT_FILE               = "edr_server.crt" if os.path.exists("edr_server.crt") or not os.path.exists("rat_server.crt") else "rat_server.crt"
+KEY_FILE                = "edr_server.key" if os.path.exists("edr_server.key") or not os.path.exists("rat_server.key") else "rat_server.key"
+PSK_FILE                = "edr_psk.txt" if os.path.exists("edr_psk.txt") or not os.path.exists("rat_psk.txt") else "rat_psk.txt"
+FPRINT_FILE             = "edr_fingerprint.txt" if os.path.exists("edr_fingerprint.txt") or not os.path.exists("rat_fingerprint.txt") else "rat_fingerprint.txt"
+LOG_FILE                = "edr_audit.log"
 
 C = {
     "base":    "#1e1e2e", "mantle":  "#181825", "crust":   "#11111b",
@@ -161,6 +173,73 @@ def _pem_fingerprint(pem_path: str) -> str:
     return hashlib.sha256(der).hexdigest().upper()
 
 
+# ════════════════════════════════════════════════════════════════
+#  Security & Restrictive Permissions Management
+# ════════════════════════════════════════════════════════════════
+
+def set_restrictive_permissions(path: str) -> bool:
+    """Sets restrictive file permissions (0600 on POSIX, restricted ACLs on Windows)."""
+    if not os.path.exists(path):
+        return False
+    try:
+        if os.name == "posix":
+            os.chmod(path, 0o600)
+            return True
+        elif os.name == "nt":
+            username = os.environ.get("USERNAME")
+            if username:
+                import subprocess
+                cmd = [
+                    "icacls.exe", path, "/inheritance:r",
+                    "/grant:r", f"{username}:F",
+                    "/grant:r", "*S-1-5-32-544:F",  # BUILTIN\Administrators
+                    "/grant:r", "*S-1-5-18:F"       # NT AUTHORITY\SYSTEM
+                ]
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            os.chmod(path, 0o600)
+            return True
+    except Exception as e:
+        print(f"[!] Warning: Failed setting restrictive permissions on {path}: {e}")
+        return False
+    return True
+
+
+def check_restrictive_permissions(path: str) -> bool:
+    """Checks if file has restrictive permissions (no group/world access on POSIX)."""
+    if not os.path.exists(path):
+        return False
+    if os.name == "posix":
+        mode = os.stat(path).st_mode
+        return (mode & 0o077) == 0
+    return True
+
+
+def secure_write_file(path: str, content: str | bytes) -> None:
+    """Safely writes content to a file ensuring restrictive permissions (0600) from creation."""
+    parent = os.path.dirname(os.path.abspath(path))
+    if parent and not os.path.exists(parent):
+        os.makedirs(parent, mode=0o700, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    mode = 0o600
+    fd = os.open(path, flags, mode)
+    with open(fd, "wb" if isinstance(content, bytes) else "w", encoding=None if isinstance(content, bytes) else "utf-8") as f:
+        f.write(content)
+    set_restrictive_permissions(path)
+
+
+def mask_credential(val: str, show_prefix: int = 4, show_suffix: int = 4) -> str:
+    """Masks a secret credential for secure display or logging."""
+    if not val:
+        return ""
+    if len(val) <= show_prefix + show_suffix:
+        return "*" * len(val)
+    return val[:show_prefix] + "..." + val[-show_suffix:]
+
+
+# ════════════════════════════════════════════════════════════════
+#  TLS Certificate & Key Management
+# ════════════════════════════════════════════════════════════════
+
 def _gen_cert_cryptography(cert_path: str, key_path: str) -> str:
     from cryptography import x509
     from cryptography.x509.oid import NameOID
@@ -191,14 +270,15 @@ def _gen_cert_cryptography(cert_path: str, key_path: str) -> str:
         .sign(key, hashes.SHA256())
     )
 
-    with open(key_path, "wb") as f:
-        f.write(key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.TraditionalOpenSSL,
-            encryption_algorithm=serialization.NoEncryption(),
-        ))
+    key_bytes = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    secure_write_file(key_path, key_bytes)
     with open(cert_path, "wb") as f:
         f.write(cert.public_bytes(serialization.Encoding.PEM))
+    set_restrictive_permissions(cert_path)
     return _pem_fingerprint(cert_path)
 
 
@@ -210,36 +290,1077 @@ def _gen_cert_openssl(cert_path: str, key_path: str) -> str:
         "-days", "3650", "-nodes", "-subj", "/CN=EDRServer"
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    set_restrictive_permissions(key_path)
+    set_restrictive_permissions(cert_path)
     return _pem_fingerprint(cert_path)
+
+
+def generate_tls_identity(
+    cert_path: str = CERT_FILE,
+    key_path: str = KEY_FILE,
+    force: bool = False
+) -> Tuple[str, str, str]:
+    """Generates TLS identity (certificate + private key) with restrictive permissions on key."""
+    if not force and os.path.exists(cert_path) and os.path.exists(key_path):
+        fp = _pem_fingerprint(cert_path)
+        set_restrictive_permissions(key_path)
+        return cert_path, key_path, fp
+
+    print("[*] Generating TLS identity files (4096-bit RSA certificate and private key)...")
+    fp = None
+    for gen in (_gen_cert_cryptography, _gen_cert_openssl):
+        try:
+            fp = gen(cert_path, key_path)
+            set_restrictive_permissions(key_path)
+            set_restrictive_permissions(cert_path)
+            print(f"[+] TLS certificate generated: {cert_path}")
+            print(f"[+] TLS private key generated: {key_path}")
+            break
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"[!] TLS generation failed with generator {gen.__name__}: {e}")
+
+    if not fp and os.path.exists(cert_path):
+        fp = _pem_fingerprint(cert_path)
+    if not fp:
+        raise RuntimeError("Failed to generate TLS identity files using both cryptography and openssl.")
+    return cert_path, key_path, fp
 
 
 def ensure_cert(cert_path: str, key_path: str) -> Optional[str]:
     if os.path.exists(cert_path) and os.path.exists(key_path):
+        set_restrictive_permissions(key_path)
         return _pem_fingerprint(cert_path)
-    print("[*] Generating TLS certificate (this may take a moment)...")
-    for gen in (_gen_cert_cryptography, _gen_cert_openssl):
-        try:
-            fp = gen(cert_path, key_path)
-            print(f"[+] Certificate generated  ({cert_path})")
-            return fp
-        except ImportError:
-            pass
-        except Exception as e:
-            print(f"[!] cert gen failed: {e}")
-    return None
+    try:
+        _, _, fp = generate_tls_identity(cert_path, key_path)
+        return fp
+    except Exception as e:
+        print(f"[!] cert gen failed: {e}")
+        return None
 
 
 def ensure_psk(psk_file: str, explicit: Optional[str]) -> str:
     if explicit:
         return explicit
     if os.path.exists(psk_file):
-        with open(psk_file) as f:
+        set_restrictive_permissions(psk_file)
+        with open(psk_file, "r", encoding="utf-8") as f:
             return f.read().strip()
     psk = secrets.token_hex(32)
-    with open(psk_file, "w") as f:
-        f.write(psk)
-    print(f"[+] Auto-generated PSK saved to {psk_file}")
+    secure_write_file(psk_file, psk)
+    print(f"[+] Auto-generated PSK saved to {psk_file} with restrictive permissions")
     return psk
+
+
+# ════════════════════════════════════════════════════════════════
+#  Enrollment Credentials Management
+# ════════════════════════════════════════════════════════════════
+
+def generate_enrollment_credentials(
+    server_host: str,
+    server_port: int,
+    psk: str,
+    cert_fingerprint: str = "",
+    use_tls: bool = True,
+    reconnect_secs: int = 5
+) -> Dict[str, Any]:
+    """Generates enrollment credentials for secure server-client communication."""
+    return {
+        "server_host": server_host,
+        "server_port": int(server_port),
+        "psk": psk,
+        "cert_fingerprint": cert_fingerprint,
+        "use_tls": bool(use_tls),
+        "reconnect_secs": int(reconnect_secs),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def export_enrollment_credentials(
+    credentials: Dict[str, Any],
+    output_path: str = DEFAULT_ENROLLMENT_FILE
+) -> str:
+    """Exports enrollment credentials to a file with restrictive permissions (0600)."""
+    secure_write_file(output_path, json.dumps(credentials, indent=2))
+    return output_path
+
+
+def generate_agent_config(
+    credentials: Dict[str, Any],
+    output_path: Optional[str] = None,
+    **overrides
+) -> Dict[str, Any]:
+    """Generates an agent_config.json configuration structure compatible with Windows and Linux agents."""
+    host = credentials.get("server_host", "127.0.0.1")
+    if host in ("0.0.0.0", "::"):
+        try:
+            host = socket.gethostbyname(socket.gethostname())
+        except Exception:
+            host = "127.0.0.1"
+
+    config = {
+        "server_host": overrides.get("server_host", host),
+        "server_port": overrides.get("server_port", credentials.get("server_port", DEFAULT_PORT)),
+        "psk": overrides.get("psk", credentials.get("psk", "")),
+        "cert_fingerprint": overrides.get("cert_fingerprint", credentials.get("cert_fingerprint", "")),
+        "use_tls": overrides.get("use_tls", credentials.get("use_tls", True)),
+        "reconnect_secs": overrides.get("reconnect_secs", credentials.get("reconnect_secs", 5)),
+        "fim_enabled": overrides.get("fim_enabled", True),
+        "fim_check_interval_secs": overrides.get("fim_check_interval_secs", 10),
+        "dlp_enabled": overrides.get("dlp_enabled", True),
+        "dlp_block_transfers": overrides.get("dlp_block_transfers", False),
+        "openedr_log_path": overrides.get("openedr_log_path", "/var/log/server-edr/telemetry.log"),
+        "auto_install_openedr": overrides.get("auto_install_openedr", True)
+    }
+    if output_path:
+        secure_write_file(output_path, json.dumps(config, indent=2))
+    return config
+
+
+# ════════════════════════════════════════════════════════════════
+#  Configuration Persistence & Model
+# ════════════════════════════════════════════════════════════════
+
+class ServerConfig:
+    """Persistent configuration for Server-EDR."""
+    def __init__(
+        self,
+        host: str = DEFAULT_HOST,
+        port: int = DEFAULT_PORT,
+        psk: str = "",
+        use_tls: bool = True,
+        cert_file: str = CERT_FILE,
+        key_file: str = KEY_FILE,
+        cert_fingerprint: str = "",
+        psk_file: str = PSK_FILE,
+        fingerprint_file: str = FPRINT_FILE,
+        allow_cidrs: Optional[List[str]] = None,
+        enrollment_credentials: Optional[Dict[str, Any]] = None,
+        created_at: Optional[str] = None,
+        updated_at: Optional[str] = None,
+        config_path: str = DEFAULT_CONFIG_FILE,
+    ):
+        self.host = host
+        self.port = int(port)
+        self.psk = psk
+        self.use_tls = bool(use_tls)
+        self.cert_file = cert_file
+        self.key_file = key_file
+        self.cert_fingerprint = cert_fingerprint
+        self.psk_file = psk_file
+        self.fingerprint_file = fingerprint_file
+        self.allow_cidrs = list(allow_cidrs or [])
+        self.config_path = config_path
+        self.created_at = created_at or datetime.now(timezone.utc).isoformat()
+        self.updated_at = updated_at or datetime.now(timezone.utc).isoformat()
+        self.enrollment_credentials = enrollment_credentials or generate_enrollment_credentials(
+            self.host, self.port, self.psk, self.cert_fingerprint, self.use_tls
+        )
+
+    def validate(self) -> None:
+        if not self.host or not isinstance(self.host, str):
+            raise ValueError(f"Invalid server host: {self.host}")
+        if not (1 <= self.port <= 65535):
+            raise ValueError(f"Invalid server port (must be 1-65535): {self.port}")
+        if not self.psk:
+            raise ValueError("Pre-shared key (PSK) cannot be empty")
+        if self.allow_cidrs:
+            for cidr in self.allow_cidrs:
+                try:
+                    ip_network(cidr, strict=False)
+                except ValueError as e:
+                    raise ValueError(f"Invalid CIDR in allowlist '{cidr}': {e}")
+        if self.use_tls:
+            if not self.cert_file or not self.key_file:
+                raise ValueError("TLS is enabled but cert_file or key_file is not specified")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "server_host": self.host,
+            "server_port": self.port,
+            "psk": self.psk,
+            "use_tls": self.use_tls,
+            "cert_file": self.cert_file,
+            "key_file": self.key_file,
+            "cert_fingerprint": self.cert_fingerprint,
+            "psk_file": self.psk_file,
+            "fingerprint_file": self.fingerprint_file,
+            "allow_cidrs": self.allow_cidrs,
+            "enrollment_credentials": self.enrollment_credentials,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any], config_path: str = DEFAULT_CONFIG_FILE) -> ServerConfig:
+        cfg = cls(
+            host=data.get("server_host", data.get("host", DEFAULT_HOST)),
+            port=data.get("server_port", data.get("port", DEFAULT_PORT)),
+            psk=data.get("psk", ""),
+            use_tls=data.get("use_tls", True),
+            cert_file=data.get("cert_file", CERT_FILE),
+            key_file=data.get("key_file", KEY_FILE),
+            cert_fingerprint=data.get("cert_fingerprint", ""),
+            psk_file=data.get("psk_file", PSK_FILE),
+            fingerprint_file=data.get("fingerprint_file", FPRINT_FILE),
+            allow_cidrs=data.get("allow_cidrs", []),
+            enrollment_credentials=data.get("enrollment_credentials"),
+            created_at=data.get("created_at"),
+            updated_at=data.get("updated_at"),
+            config_path=config_path,
+        )
+        cfg.validate()
+        return cfg
+
+    def to_agent_config(self, **overrides) -> Dict[str, Any]:
+        return generate_agent_config(self.enrollment_credentials, **overrides)
+
+    def to_enrollment_credentials(self) -> Dict[str, Any]:
+        return generate_enrollment_credentials(
+            self.host, self.port, self.psk, self.cert_fingerprint, self.use_tls
+        )
+
+
+def save_server_config(config: ServerConfig, config_path: Optional[str] = None) -> str:
+    """Persists ServerConfig to JSON file with restrictive permissions (0600)."""
+    path = config_path or config.config_path or DEFAULT_CONFIG_FILE
+    config.validate()
+    config.updated_at = datetime.now(timezone.utc).isoformat()
+    config.enrollment_credentials = config.to_enrollment_credentials()
+    data = config.to_dict()
+    secure_write_file(path, json.dumps(data, indent=2))
+    AUDIT.info("CONFIG_SAVED  path=%s  host=%s  port=%d", path, config.host, config.port)
+    return path
+
+
+def load_server_config(config_path: str = DEFAULT_CONFIG_FILE) -> ServerConfig:
+    """Loads and validates configuration from persistent storage with permission enforcement."""
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Server configuration file not found: {config_path}")
+
+    if not check_restrictive_permissions(config_path):
+        print(f"[!] Warning: Permissive file permissions detected on {config_path}. Restricting...")
+        set_restrictive_permissions(config_path)
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Failed to parse server configuration JSON: {e}")
+
+    config = ServerConfig.from_dict(data, config_path=config_path)
+    if os.path.exists(config.key_file):
+        set_restrictive_permissions(config.key_file)
+    if os.path.exists(config.psk_file):
+        set_restrictive_permissions(config.psk_file)
+    return config
+
+
+def reload_server_config(
+    current_config: Optional[ServerConfig] = None,
+    config_path: str = DEFAULT_CONFIG_FILE
+) -> ServerConfig:
+    """Reloads configuration from persistent storage and updates running state."""
+    new_cfg = load_server_config(config_path)
+    if current_config is not None:
+        current_config.host = new_cfg.host
+        current_config.port = new_cfg.port
+        current_config.psk = new_cfg.psk
+        current_config.use_tls = new_cfg.use_tls
+        current_config.cert_file = new_cfg.cert_file
+        current_config.key_file = new_cfg.key_file
+        current_config.cert_fingerprint = new_cfg.cert_fingerprint
+        current_config.allow_cidrs = new_cfg.allow_cidrs
+        current_config.enrollment_credentials = new_cfg.enrollment_credentials
+        current_config.updated_at = new_cfg.updated_at
+    AUDIT.info("CONFIG_RELOAD  path=%s  host=%s  port=%d  tls=%s",
+               config_path, new_cfg.host, new_cfg.port, new_cfg.use_tls)
+    return new_cfg
+
+
+# ════════════════════════════════════════════════════════════════
+#  First-Run Configuration Wizard & GUI Dialogs
+# ════════════════════════════════════════════════════════════════
+
+class ConfigWizardDialog(tk.Toplevel):
+    """First-Run Server Configuration Wizard Dialog."""
+    def __init__(
+        self,
+        parent: tk.Tk | tk.Toplevel,
+        config_path: str = DEFAULT_CONFIG_FILE,
+        host: str = DEFAULT_HOST,
+        port: int = DEFAULT_PORT,
+        psk: Optional[str] = None,
+        use_tls: bool = True,
+        cert_file: str = CERT_FILE,
+        key_file: str = KEY_FILE,
+        allow_cidrs: Optional[List[str]] = None,
+    ):
+        super().__init__(parent)
+        self.title("Server-EDR // First-Run Configuration Wizard")
+        self.geometry("620x600")
+        self.minsize(580, 540)
+        self.configure(bg=C["base"])
+        self.transient(parent)
+        self.grab_set()
+
+        self.config_path = config_path
+        self.result_config: Optional[ServerConfig] = None
+
+        self._host_var = tk.StringVar(value=host)
+        self._port_var = tk.StringVar(value=str(port))
+        self._tls_var = tk.BooleanVar(value=use_tls)
+        self._cert_var = tk.StringVar(value=cert_file)
+        self._key_var = tk.StringVar(value=key_file)
+        self._psk_var = tk.StringVar(value=psk or secrets.token_hex(32))
+        self._cidrs_var = tk.StringVar(value=", ".join(allow_cidrs or []))
+        self._restrict_perms_var = tk.BooleanVar(value=True)
+
+        self._build_ui()
+
+    def _build_ui(self):
+        # Header
+        hdr = tk.Frame(self, bg=C["crust"], height=64)
+        hdr.pack(fill="x", side="top")
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="🛡️  SERVER-EDR INITIAL CONFIGURATION WIZARD",
+                 bg=C["crust"], fg=C["blue"], font=(MONO, 12, "bold")).pack(anchor="w", padx=16, pady=(10, 2))
+        tk.Label(hdr, text="First-run setup: configure listening endpoint, TLS identity, and client enrollment credentials.",
+                 bg=C["crust"], fg=C["subtext"], font=(MONO, 8)).pack(anchor="w", padx=16)
+
+        # Body
+        body = tk.Frame(self, bg=C["base"], padx=18, pady=12)
+        body.pack(fill="both", expand=True)
+
+        def make_section(title: str):
+            f = tk.Frame(body, bg=C["base"])
+            f.pack(fill="x", pady=(8, 4))
+            tk.Label(f, text=title, bg=C["base"], fg=C["mauve"], font=(MONO, 9, "bold")).pack(anchor="w")
+            tk.Frame(f, bg=C["surface0"], height=1).pack(fill="x", pady=2)
+            return f
+
+        # Network section
+        make_section("1. Network & Listening Endpoint")
+        grid1 = tk.Frame(body, bg=C["base"])
+        grid1.pack(fill="x", pady=2)
+        tk.Label(grid1, text="Bind Address:", bg=C["base"], fg=C["text"], font=(MONO, 9)).grid(row=0, column=0, sticky="w", pady=3)
+        ttk.Entry(grid1, textvariable=self._host_var, width=20).grid(row=0, column=1, sticky="w", padx=8, pady=3)
+        tk.Label(grid1, text="TCP Port:", bg=C["base"], fg=C["text"], font=(MONO, 9)).grid(row=0, column=2, sticky="w", padx=(12, 0), pady=3)
+        ttk.Entry(grid1, textvariable=self._port_var, width=10).grid(row=0, column=3, sticky="w", padx=8, pady=3)
+
+        tk.Label(grid1, text="Allowed CIDRs:", bg=C["base"], fg=C["text"], font=(MONO, 9)).grid(row=1, column=0, sticky="w", pady=3)
+        ttk.Entry(grid1, textvariable=self._cidrs_var, width=38).grid(row=1, column=1, columnspan=3, sticky="we", padx=8, pady=3)
+
+        # TLS Identity section
+        make_section("2. TLS Transport Identity")
+        grid2 = tk.Frame(body, bg=C["base"])
+        grid2.pack(fill="x", pady=2)
+        tk.Checkbutton(grid2, text="Enable TLS 1.2+ Transport Encryption", variable=self._tls_var,
+                       bg=C["base"], fg=C["green"], selectcolor=C["surface0"], activebackground=C["base"],
+                       activeforeground=C["green"], font=(MONO, 9, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
+
+        tk.Label(grid2, text="Certificate File:", bg=C["base"], fg=C["text"], font=(MONO, 9)).grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Entry(grid2, textvariable=self._cert_var, width=32).grid(row=1, column=1, sticky="w", padx=8, pady=2)
+
+        tk.Label(grid2, text="Private Key File:", bg=C["base"], fg=C["text"], font=(MONO, 9)).grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Entry(grid2, textvariable=self._key_var, width=32).grid(row=2, column=1, sticky="w", padx=8, pady=2)
+
+        # Authentication & Enrollment
+        make_section("3. Sensor Authentication & Enrollment")
+        grid3 = tk.Frame(body, bg=C["base"])
+        grid3.pack(fill="x", pady=2)
+        tk.Label(grid3, text="Pre-Shared Key (PSK):", bg=C["base"], fg=C["text"], font=(MONO, 9)).grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Entry(grid3, textvariable=self._psk_var, width=36).grid(row=0, column=1, sticky="w", padx=8, pady=2)
+        ttk.Button(grid3, text="🔄 Generate", command=lambda: self._psk_var.set(secrets.token_hex(32))).grid(row=0, column=2, sticky="w", pady=2)
+
+        # Hardening Notice
+        make_section("4. Security Persistence & Permissions")
+        sec_f = tk.Frame(body, bg=C["surface0"], padx=10, pady=8)
+        sec_f.pack(fill="x", pady=4)
+        tk.Checkbutton(sec_f, text="🔒 Enforce Restrictive Permissions (0600 / restricted ACLs)", variable=self._restrict_perms_var,
+                       bg=C["surface0"], fg=C["text"], selectcolor=C["base"], activebackground=C["surface0"],
+                       activeforeground=C["text"], font=(MONO, 9)).pack(anchor="w")
+        tk.Label(sec_f, text="Configuration, private key, and PSK will be saved with owner-only access to prevent unauthorized credential access.",
+                 bg=C["surface0"], fg=C["subtext"], font=(MONO, 8), wraplength=520, justify="left").pack(anchor="w", pady=(2, 0))
+
+        # Bottom buttons
+        btn_bar = tk.Frame(self, bg=C["crust"], height=48, padx=16)
+        btn_bar.pack(fill="x", side="bottom")
+        btn_bar.pack_propagate(False)
+
+        ttk.Button(btn_bar, text="Save & Start Server", style="Success.TButton", command=self._on_save).pack(side="right", padx=6, pady=8)
+        ttk.Button(btn_bar, text="Cancel", style="Danger.TButton", command=self.destroy).pack(side="right", padx=6, pady=8)
+
+    def _on_save(self):
+        host = self._host_var.get().strip() or DEFAULT_HOST
+        port_str = self._port_var.get().strip()
+        psk = self._psk_var.get().strip()
+        use_tls = self._tls_var.get()
+        cert_file = self._cert_var.get().strip() or CERT_FILE
+        key_file = self._key_var.get().strip() or KEY_FILE
+        cidrs_raw = self._cidrs_var.get().strip()
+
+        try:
+            port = int(port_str)
+            if not (1 <= port <= 65535):
+                raise ValueError()
+        except Exception:
+            messagebox.showerror("Invalid Port", "Port must be an integer between 1 and 65535.")
+            return
+
+        if not psk:
+            messagebox.showerror("Invalid PSK", "Pre-shared key (PSK) cannot be empty.")
+            return
+
+        allow_cidrs = []
+        if cidrs_raw:
+            for c in [x.strip() for x in cidrs_raw.split(",") if x.strip()]:
+                try:
+                    ip_network(c, strict=False)
+                    allow_cidrs.append(c)
+                except ValueError as e:
+                    messagebox.showerror("Invalid CIDR", f"Invalid CIDR '{c}': {e}")
+                    return
+
+        fingerprint = ""
+        if use_tls:
+            try:
+                _, _, fingerprint = generate_tls_identity(cert_file, key_file)
+            except Exception as e:
+                messagebox.showerror("TLS Error", f"Failed generating TLS certificate and key: {e}")
+                return
+
+        # Save PSK and fingerprint files
+        secure_write_file(PSK_FILE, psk)
+        if fingerprint:
+            secure_write_file(FPRINT_FILE, fingerprint)
+
+        enrollment = generate_enrollment_credentials(
+            host, port, psk, fingerprint, use_tls
+        )
+        export_enrollment_credentials(enrollment, DEFAULT_ENROLLMENT_FILE)
+
+        config = ServerConfig(
+            host=host,
+            port=port,
+            psk=psk,
+            use_tls=use_tls,
+            cert_file=cert_file,
+            key_file=key_file,
+            cert_fingerprint=fingerprint,
+            allow_cidrs=allow_cidrs,
+            enrollment_credentials=enrollment,
+            config_path=self.config_path,
+        )
+        save_server_config(config, self.config_path)
+        self.result_config = config
+        self.destroy()
+
+
+class ServerConfigDialog(tk.Toplevel):
+    """Runtime Configuration Viewer & Reload Dialog."""
+    def __init__(
+        self,
+        parent: tk.Tk | tk.Toplevel,
+        config: Optional[ServerConfig],
+        on_reload: Optional[Callable] = None,
+    ):
+        super().__init__(parent)
+        self.title("Server-EDR // Active Server Configuration")
+        self.geometry("600x520")
+        self.minsize(540, 460)
+        self.configure(bg=C["base"])
+        self.transient(parent)
+        self.grab_set()
+
+        self.config = config
+        self.on_reload = on_reload
+        self._psk_revealed = False
+
+        self._build_ui()
+
+    def _build_ui(self):
+        # Header
+        hdr = tk.Frame(self, bg=C["crust"], height=50)
+        hdr.pack(fill="x", side="top")
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="⚙️  ACTIVE SERVER CONFIGURATION",
+                 bg=C["crust"], fg=C["blue"], font=(MONO, 11, "bold")).pack(side="left", padx=16, pady=12)
+
+        body = tk.Frame(self, bg=C["base"], padx=18, pady=12)
+        body.pack(fill="both", expand=True)
+
+        if not self.config:
+            tk.Label(body, text="No active configuration file loaded.", bg=C["base"], fg=C["peach"], font=(MONO, 10)).pack(pady=20)
+            return
+
+        cfg = self.config
+        rows = [
+            ("Config File:", cfg.config_path),
+            ("Listen Host:", cfg.host),
+            ("Listen Port:", str(cfg.port)),
+            ("TLS Transport:", "Enabled (TLS 1.2+)" if cfg.use_tls else "Disabled (Plaintext)"),
+            ("Cert File:", cfg.cert_file),
+            ("Key File:", cfg.key_file),
+            ("Cert Fingerprint:", cfg.cert_fingerprint or "N/A"),
+            ("Allow CIDRs:", ", ".join(cfg.allow_cidrs) if cfg.allow_cidrs else "Any (0.0.0.0/0)"),
+            ("Last Updated:", cfg.updated_at),
+        ]
+
+        for i, (k, v) in enumerate(rows):
+            tk.Label(body, text=k, bg=C["base"], fg=C["subtext"], font=(MONO, 9, "bold")).grid(row=i, column=0, sticky="w", pady=3)
+            tk.Label(body, text=v, bg=C["base"], fg=C["text"], font=(MONO, 9)).grid(row=i, column=1, sticky="w", padx=10, pady=3)
+
+        # PSK row with reveal toggle
+        r_psk = len(rows)
+        tk.Label(body, text="Pre-Shared Key:", bg=C["base"], fg=C["subtext"], font=(MONO, 9, "bold")).grid(row=r_psk, column=0, sticky="w", pady=3)
+        self._lbl_psk = tk.Label(body, text=mask_credential(cfg.psk), bg=C["base"], fg=C["yellow"], font=(MONO, 9))
+        self._lbl_psk.grid(row=r_psk, column=1, sticky="w", padx=10, pady=3)
+        ttk.Button(body, text="👁 Toggle", command=self._toggle_psk).grid(row=r_psk, column=2, sticky="w", pady=3)
+
+        # Buttons
+        btn_bar = tk.Frame(self, bg=C["crust"], height=48, padx=16)
+        btn_bar.pack(fill="x", side="bottom")
+        btn_bar.pack_propagate(False)
+
+        ttk.Button(btn_bar, text="Close", command=self.destroy).pack(side="right", padx=6, pady=8)
+        if self.on_reload:
+            ttk.Button(btn_bar, text="🔄 Reload from Disk", command=self._do_reload).pack(side="left", padx=6, pady=8)
+        ttk.Button(btn_bar, text="📦 Build Package", command=self._open_package_builder).pack(side="left", padx=6, pady=8)
+
+    def _open_package_builder(self):
+        creds = self.config.to_enrollment_credentials() if self.config else {}
+        AgentPackageBuilderDialog(self.master, credentials=creds, config=self.config)
+
+    def _toggle_psk(self):
+        if not self.config: return
+        self._psk_revealed = not self._psk_revealed
+        self._lbl_psk.config(text=self.config.psk if self._psk_revealed else mask_credential(self.config.psk))
+
+    def _do_reload(self):
+        if self.on_reload:
+            self.on_reload()
+            self.destroy()
+
+
+class EnrollmentCredentialsDialog(tk.Toplevel):
+    """Enrollment Credentials Display and Export Modal."""
+    def __init__(
+        self,
+        parent: tk.Tk | tk.Toplevel,
+        credentials: Dict[str, Any]
+    ):
+        super().__init__(parent)
+        self.title("Server-EDR // Client Enrollment Credentials")
+        self.geometry("640x480")
+        self.minsize(580, 420)
+        self.configure(bg=C["base"])
+        self.transient(parent)
+        self.grab_set()
+
+        self.credentials = credentials
+        self._build_ui()
+
+    def _build_ui(self):
+        hdr = tk.Frame(self, bg=C["crust"], height=50)
+        hdr.pack(fill="x", side="top")
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="🔑  CLIENT ENROLLMENT CREDENTIALS",
+                 bg=C["crust"], fg=C["blue"], font=(MONO, 11, "bold")).pack(side="left", padx=16, pady=12)
+
+        body = tk.Frame(self, bg=C["base"], padx=18, pady=12)
+        body.pack(fill="both", expand=True)
+
+        tk.Label(body, text="Configure these credentials into endpoint defense agents or export agent packages:",
+                 bg=C["base"], fg=C["subtext"], font=(MONO, 8)).pack(anchor="w", pady=(0, 10))
+
+        c = self.credentials
+        rows = [
+            ("Server Endpoint:", f"{c.get('server_host')}:{c.get('server_port')}"),
+            ("TLS Fingerprint:", c.get("cert_fingerprint", "N/A")),
+            ("PSK (Hex Token):", c.get("psk", "")),
+            ("TLS Required:", "Yes" if c.get("use_tls") else "No"),
+            ("Reconnect Interval:", f"{c.get('reconnect_secs', 5)}s"),
+        ]
+
+        for k, v in rows:
+            f = tk.Frame(body, bg=C["base"])
+            f.pack(fill="x", pady=4)
+            tk.Label(f, text=f"{k:<20}", bg=C["base"], fg=C["blue"], font=(MONO, 9, "bold")).pack(side="left")
+            val_ent = ttk.Entry(f, width=42)
+            val_ent.insert(0, str(v))
+            val_ent.configure(state="readonly")
+            val_ent.pack(side="left", padx=8)
+
+        # Export Buttons
+        btn_bar = tk.Frame(self, bg=C["crust"], height=48, padx=16)
+        btn_bar.pack(fill="x", side="bottom")
+        btn_bar.pack_propagate(False)
+
+        ttk.Button(btn_bar, text="Close", command=self.destroy).pack(side="right", padx=6, pady=8)
+        ttk.Button(btn_bar, text="Export edr_enrollment.json", command=self._export_enrollment).pack(side="left", padx=6, pady=8)
+        ttk.Button(btn_bar, text="Export agent_config.json", command=self._export_agent_config).pack(side="left", padx=6, pady=8)
+        ttk.Button(btn_bar, text="📦 Build Package", command=self._open_package_builder).pack(side="left", padx=6, pady=8)
+
+    def _open_package_builder(self):
+        AgentPackageBuilderDialog(self.master, credentials=self.credentials)
+
+    def _export_enrollment(self):
+        fpath = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            initialfile="edr_enrollment.json",
+            filetypes=[("JSON files", "*.json"), ("All Files", "*.*")]
+        )
+        if fpath:
+            export_enrollment_credentials(self.credentials, fpath)
+            messagebox.showinfo("Export Successful", f"Saved enrollment credentials to:\n{fpath}")
+
+    def _export_agent_config(self):
+        fpath = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            initialfile="agent_config.json",
+            filetypes=[("JSON files", "*.json"), ("All Files", "*.*")]
+        )
+        if fpath:
+            generate_agent_config(self.credentials, output_path=fpath)
+            messagebox.showinfo("Export Successful", f"Saved agent config to:\n{fpath}")
+
+
+# ════════════════════════════════════════════════════════════════
+#  Agent Package Builder (GUI & Programmatic Backend)
+# ════════════════════════════════════════════════════════════════
+
+def build_agent_package(
+    os_type: str,
+    output_path: Optional[str] = None,
+    server_host: Optional[str] = None,
+    server_port: Optional[int] = None,
+    psk: Optional[str] = None,
+    cert_fingerprint: Optional[str] = None,
+    use_tls: bool = True,
+    polling_interval: int = 10,
+    group_tag: Optional[str] = None,
+    overrides: Optional[Dict[str, Any]] = None,
+    config: Optional[ServerConfig] = None,
+    version: str = "1.0.0"
+) -> str:
+    """
+    Builds a deployable agent package for Linux (.tar.gz) or Windows (.zip).
+    Supports server endpoint, polling interval, and group-tag overrides.
+    """
+    os_type_clean = os_type.strip().lower()
+    if os_type_clean not in ("linux", "windows"):
+        raise ValueError(f"Unsupported OS type '{os_type}'. Supported: 'linux', 'windows'")
+
+    # Load default server config if not provided
+    if config is None:
+        try:
+            config = load_server_config(DEFAULT_CONFIG_FILE)
+        except Exception:
+            config = None
+
+    host = server_host or (config.host if config else "127.0.0.1")
+    port = int(server_port or (config.port if config else DEFAULT_PORT))
+    psk_val = psk or (config.psk if config else "")
+    fp = cert_fingerprint or (config.cert_fingerprint if config else "")
+    tls = use_tls if use_tls is not None else (config.use_tls if config else True)
+    interval = int(polling_interval or 10)
+    tag = str(group_tag or "")
+
+    agent_config_data = {
+        "server": {
+            "host": host,
+            "port": port,
+            "use_tls": tls,
+            "cert_fingerprint": fp,
+            "reconnect_interval": interval,
+            "max_reconnect_delay": max(interval * 6, 60)
+        },
+        "auth": {
+            "psk": psk_val
+        },
+        "agent": {
+            "log_level": "INFO",
+            "group_tag": tag,
+            "polling_interval": interval,
+            "heartbeat_interval": interval,
+            "watchdog_enabled": True,
+            "watchdog_interval": 3,
+            "fim_enabled": True,
+            "dlp_enabled": True,
+            "dlp_block_transfers": False
+        },
+        "server_host": host,
+        "server_port": port,
+        "psk": psk_val,
+        "cert_fingerprint": fp,
+        "cert_thumbprint": fp,
+        "use_tls": tls,
+        "reconnect_secs": interval,
+        "group_tag": tag,
+    }
+    if overrides:
+        agent_config_data.update(overrides)
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    dist_dir = os.path.join(base_dir, "dist")
+    os.makedirs(dist_dir, exist_ok=True)
+
+    if os_type_clean == "linux":
+        if build_linux_package is None:
+            raise ImportError("build_linux_package is not available in agents.linux.package_linux_agent")
+        out = output_path or os.path.join(dist_dir, "server-edr-agent-linux.tar.gz")
+        res_path = build_linux_package(
+            output_path=out,
+            config_data=agent_config_data,
+            source_dir=os.path.join(base_dir, "agents", "linux")
+        )
+    else:  # windows
+        if build_windows_package is None:
+            raise ImportError("build_windows_package is not available in agents.windows.package_windows_agent")
+        out = output_path or os.path.join(dist_dir, f"Server-EDR-Agent-Windows-v{version}.zip")
+        res_path = build_windows_package(
+            output_path=out,
+            config_data=agent_config_data,
+            source_dir=os.path.join(base_dir, "agents", "windows"),
+            version=version
+        )
+
+    AUDIT.info("AGENT_PACKAGE_BUILT  os=%s  path=%s  host=%s  port=%d  group=%s  interval=%d",
+               os_type_clean, res_path, host, port, tag, interval)
+    return res_path
+
+
+class AgentPackageBuilderDialog(tk.Toplevel):
+    """GUI Agent Package Builder Dialog for Linux (.tar.gz) and Windows (.zip)."""
+    def __init__(
+        self,
+        parent: tk.Tk | tk.Toplevel,
+        credentials: Optional[Dict[str, Any]] = None,
+        config: Optional[ServerConfig] = None,
+    ):
+        super().__init__(parent)
+        self.title("Server-EDR // GUI Agent Package Builder")
+        self.geometry("640x660")
+        self.minsize(600, 600)
+        self.configure(bg=C["base"])
+        self.transient(parent)
+        self.grab_set()
+
+        self.credentials = credentials or {}
+        self.config = config
+        self._target_os_var = tk.StringVar(value="linux")
+        self._use_tls_var = tk.BooleanVar(value=self.credentials.get("use_tls", True))
+
+        self._build_ui()
+
+    def _build_ui(self):
+        # Header
+        hdr = tk.Frame(self, bg=C["crust"], height=52)
+        hdr.pack(fill="x", side="top")
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="📦  GUI AGENT PACKAGE BUILDER",
+                 bg=C["crust"], fg=C["blue"], font=(MONO, 12, "bold")).pack(side="left", padx=16, pady=12)
+
+        # Body container
+        body = tk.Frame(self, bg=C["base"], padx=20, pady=12)
+        body.pack(fill="both", expand=True)
+
+        # 1. Target OS selector
+        os_frame = tk.LabelFrame(body, text=" 1. Target Operating System & Format ",
+                                 bg=C["base"], fg=C["blue"], font=(MONO, 9, "bold"), padx=12, pady=8)
+        os_frame.pack(fill="x", pady=(0, 10))
+
+        rb_linux = tk.Radiobutton(os_frame, text="Linux Sensor (.tar.gz)", value="linux",
+                                  variable=self._target_os_var, command=self._on_os_change,
+                                  bg=C["base"], fg=C["text"], selectcolor=C["surface0"],
+                                  activebackground=C["base"], activeforeground=C["lavender"], font=(MONO, 9))
+        rb_linux.pack(side="left", padx=(10, 20))
+
+        rb_win = tk.Radiobutton(os_frame, text="Windows Sensor (.zip)", value="windows",
+                                variable=self._target_os_var, command=self._on_os_change,
+                                bg=C["base"], fg=C["text"], selectcolor=C["surface0"],
+                                activebackground=C["base"], activeforeground=C["lavender"], font=(MONO, 9))
+        rb_win.pack(side="left", padx=10)
+
+        # 2. Server Endpoint & Authentication
+        net_frame = tk.LabelFrame(body, text=" 2. Endpoint & Authentication Settings ",
+                                  bg=C["base"], fg=C["blue"], font=(MONO, 9, "bold"), padx=12, pady=8)
+        net_frame.pack(fill="x", pady=(0, 10))
+
+        # Host & Port
+        f_ep = tk.Frame(net_frame, bg=C["base"])
+        f_ep.pack(fill="x", pady=2)
+        tk.Label(f_ep, text="Server Host:", width=14, anchor="w", bg=C["base"], fg=C["subtext"], font=(MONO, 9)).pack(side="left")
+        self._ent_host = ttk.Entry(f_ep, width=24)
+        self._ent_host.insert(0, str(self.credentials.get("server_host", "127.0.0.1")))
+        self._ent_host.pack(side="left", padx=(0, 12))
+
+        tk.Label(f_ep, text="Port:", width=6, anchor="w", bg=C["base"], fg=C["subtext"], font=(MONO, 9)).pack(side="left")
+        self._ent_port = ttk.Entry(f_ep, width=10)
+        self._ent_port.insert(0, str(self.credentials.get("server_port", 4444)))
+        self._ent_port.pack(side="left")
+
+        # PSK
+        f_psk = tk.Frame(net_frame, bg=C["base"])
+        f_psk.pack(fill="x", pady=4)
+        tk.Label(f_psk, text="Pre-Shared Key:", width=14, anchor="w", bg=C["base"], fg=C["subtext"], font=(MONO, 9)).pack(side="left")
+        self._ent_psk = ttk.Entry(f_psk, width=36)
+        self._ent_psk.insert(0, str(self.credentials.get("psk", "")))
+        self._ent_psk.pack(side="left", padx=(0, 8))
+        ttk.Button(f_psk, text="🎲 New PSK", command=self._gen_psk).pack(side="left")
+
+        # TLS & Fingerprint
+        f_tls = tk.Frame(net_frame, bg=C["base"])
+        f_tls.pack(fill="x", pady=2)
+        tk.Checkbutton(f_tls, text="Require TLS Encryption", variable=self._use_tls_var,
+                       bg=C["base"], fg=C["text"], selectcolor=C["surface0"],
+                       activebackground=C["base"], font=(MONO, 9)).pack(side="left")
+
+        f_fp = tk.Frame(net_frame, bg=C["base"])
+        f_fp.pack(fill="x", pady=2)
+        tk.Label(f_fp, text="TLS Fingerprint:", width=14, anchor="w", bg=C["base"], fg=C["subtext"], font=(MONO, 9)).pack(side="left")
+        self._ent_fp = ttk.Entry(f_fp, width=46)
+        self._ent_fp.insert(0, str(self.credentials.get("cert_fingerprint", "")))
+        self._ent_fp.pack(side="left")
+
+        # 3. Overrides (Sub-Issue #19)
+        ovr_frame = tk.LabelFrame(body, text=" 3. Deployment Overrides (Group Tag & Polling) ",
+                                  bg=C["base"], fg=C["blue"], font=(MONO, 9, "bold"), padx=12, pady=8)
+        ovr_frame.pack(fill="x", pady=(0, 10))
+
+        f_ovr = tk.Frame(ovr_frame, bg=C["base"])
+        f_ovr.pack(fill="x", pady=2)
+        tk.Label(f_ovr, text="Group Tag:", width=14, anchor="w", bg=C["base"], fg=C["subtext"], font=(MONO, 9)).pack(side="left")
+        self._ent_group = ttk.Entry(f_ovr, width=20)
+        self._ent_group.insert(0, "default-fleet")
+        self._ent_group.pack(side="left", padx=(0, 12))
+
+        tk.Label(f_ovr, text="Polling Interval (s):", anchor="w", bg=C["base"], fg=C["subtext"], font=(MONO, 9)).pack(side="left")
+        self._ent_poll = ttk.Entry(f_ovr, width=8)
+        self._ent_poll.insert(0, "10")
+        self._ent_poll.pack(side="left", padx=4)
+
+        # 4. Destination File
+        out_frame = tk.LabelFrame(body, text=" 4. Output Package File ",
+                                  bg=C["base"], fg=C["blue"], font=(MONO, 9, "bold"), padx=12, pady=8)
+        out_frame.pack(fill="x", pady=(0, 10))
+
+        f_out = tk.Frame(out_frame, bg=C["base"])
+        f_out.pack(fill="x", pady=2)
+        self._ent_out = ttk.Entry(f_out, width=48)
+        self._ent_out.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        ttk.Button(f_out, text="Browse...", command=self._browse_output).pack(side="right")
+
+        self._update_default_output()
+
+        # Build Status / Log Area
+        self._lbl_status = tk.Label(body, text="Select configuration and click 'Build Package' to generate deployable archive.",
+                                    bg=C["base"], fg=C["overlay0"], font=(MONO, 8), wraplength=580, justify="left")
+        self._lbl_status.pack(fill="x", pady=(4, 0))
+
+        # Buttons
+        btn_bar = tk.Frame(self, bg=C["crust"], height=50, padx=16)
+        btn_bar.pack(fill="x", side="bottom")
+        btn_bar.pack_propagate(False)
+
+        ttk.Button(btn_bar, text="Cancel", command=self.destroy).pack(side="right", padx=6, pady=10)
+        ttk.Button(btn_bar, text="🔨 Build Package", style="Accent.TButton",
+                   command=self._do_build).pack(side="right", padx=6, pady=10)
+
+    def _on_os_change(self):
+        self._update_default_output()
+
+    def _update_default_output(self):
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        dist_dir = os.path.join(base_dir, "dist")
+        os.makedirs(dist_dir, exist_ok=True)
+        os_choice = self._target_os_var.get()
+        if os_choice == "linux":
+            default_path = os.path.join(dist_dir, "server-edr-agent-linux.tar.gz")
+        else:
+            default_path = os.path.join(dist_dir, "Server-EDR-Agent-Windows-v1.0.0.zip")
+        self._ent_out.delete(0, "end")
+        self._ent_out.insert(0, default_path)
+
+    def _gen_psk(self):
+        new_token = secrets.token_hex(24)
+        self._ent_psk.delete(0, "end")
+        self._ent_psk.insert(0, new_token)
+
+    def _browse_output(self):
+        os_choice = self._target_os_var.get()
+        if os_choice == "linux":
+            filetypes = [("Tar GZip archives", "*.tar.gz"), ("All Files", "*.*")]
+            defext = ".tar.gz"
+            initialfile = "server-edr-agent-linux.tar.gz"
+        else:
+            filetypes = [("Zip archives", "*.zip"), ("All Files", "*.*")]
+            defext = ".zip"
+            initialfile = "Server-EDR-Agent-Windows-v1.0.0.zip"
+
+        fpath = filedialog.asksaveasfilename(
+            defaultextension=defext,
+            initialfile=initialfile,
+            filetypes=filetypes
+        )
+        if fpath:
+            self._ent_out.delete(0, "end")
+            self._ent_out.insert(0, fpath)
+
+    def _do_build(self):
+        os_type = self._target_os_var.get()
+        host = self._ent_host.get().strip()
+        port_str = self._ent_port.get().strip()
+        psk = self._ent_psk.get().strip()
+        fp = self._ent_fp.get().strip()
+        use_tls = self._use_tls_var.get()
+        group_tag = self._ent_group.get().strip()
+        poll_str = self._ent_poll.get().strip()
+        out_path = self._ent_out.get().strip()
+
+        if not host:
+            messagebox.showerror("Validation Error", "Server Host cannot be empty.")
+            return
+
+        try:
+            port = int(port_str)
+            if not (1 <= port <= 65535):
+                raise ValueError()
+        except ValueError:
+            messagebox.showerror("Validation Error", "Port must be an integer between 1 and 65535.")
+            return
+
+        try:
+            polling_interval = int(poll_str)
+            if polling_interval <= 0:
+                raise ValueError()
+        except ValueError:
+            messagebox.showerror("Validation Error", "Polling interval must be a positive integer.")
+            return
+
+        if not out_path:
+            messagebox.showerror("Validation Error", "Output path cannot be empty.")
+            return
+
+        self._lbl_status.config(text=f"Building {os_type.capitalize()} package... Please wait.", fg=C["yellow"])
+        self.update_idletasks()
+
+        try:
+            res_path = build_agent_package(
+                os_type=os_type,
+                output_path=out_path,
+                server_host=host,
+                server_port=port,
+                psk=psk,
+                cert_fingerprint=fp,
+                use_tls=use_tls,
+                polling_interval=polling_interval,
+                group_tag=group_tag,
+                config=self.config
+            )
+            size_kb = os.path.getsize(res_path) / 1024
+            with open(res_path, "rb") as f:
+                sha256 = hashlib.sha256(f.read()).hexdigest()
+
+            msg = (
+                f"✓ Package Created Successfully!\n\n"
+                f"Platform: {os_type.capitalize()}\n"
+                f"File: {res_path}\n"
+                f"Size: {size_kb:.1f} KB\n"
+                f"Group Tag: {group_tag}\n"
+                f"Endpoint: {host}:{port}\n"
+                f"SHA256: {sha256}"
+            )
+            self._lbl_status.config(text=f"✓ Package built: {os.path.basename(res_path)} ({size_kb:.1f} KB) | SHA256: {sha256[:16]}...", fg=C["green"])
+            messagebox.showinfo("Package Build Complete", msg)
+        except Exception as e:
+            self._lbl_status.config(text=f"[-] Error: {e}", fg=C["red"])
+            messagebox.showerror("Build Error", f"Failed to build package:\n{e}")
+
+
+
+def run_config_wizard(
+    config_path: str = DEFAULT_CONFIG_FILE,
+    interactive: bool = True,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    psk: Optional[str] = None,
+    use_tls: bool = True,
+    cert_file: str = CERT_FILE,
+    key_file: str = KEY_FILE,
+    allow_cidrs: Optional[List[str]] = None,
+    parent_window: Optional[tk.Tk | tk.Toplevel] = None
+) -> ServerConfig:
+    """
+    Executes first-run configuration wizard flow.
+    Supports interactive GUI dialog or non-interactive/headless automated generation.
+    """
+    if interactive:
+        try:
+            temp_root = None
+            if parent_window is None:
+                temp_root = tk.Tk()
+                temp_root.withdraw()
+                parent = temp_root
+            else:
+                parent = parent_window
+
+            dlg = ConfigWizardDialog(
+                parent,
+                config_path=config_path,
+                host=host,
+                port=port,
+                psk=psk,
+                use_tls=use_tls,
+                cert_file=cert_file,
+                key_file=key_file,
+                allow_cidrs=allow_cidrs,
+            )
+            dlg.wait_window()
+            result = dlg.result_config
+            if temp_root:
+                temp_root.destroy()
+            if result:
+                return result
+            print("[*] Wizard cancelled by user. Using default automated configuration...")
+        except Exception as e:
+            print(f"[*] Interactive wizard unavailable ({e}); falling back to automated setup...")
+
+    # Non-interactive / headless setup
+    psk_val = psk or secrets.token_hex(32)
+    fingerprint = ""
+    if use_tls:
+        try:
+            _, _, fingerprint = generate_tls_identity(cert_file, key_file)
+        except Exception as e:
+            print(f"[!] Failed generating TLS identity: {e}. Falling back to unencrypted mode.")
+            use_tls = False
+
+    secure_write_file(PSK_FILE, psk_val)
+    if fingerprint:
+        secure_write_file(FPRINT_FILE, fingerprint)
+
+    enrollment = generate_enrollment_credentials(
+        host, port, psk_val, fingerprint, use_tls
+    )
+    export_enrollment_credentials(enrollment, DEFAULT_ENROLLMENT_FILE)
+
+    config = ServerConfig(
+        host=host,
+        port=port,
+        psk=psk_val,
+        use_tls=use_tls,
+        cert_file=cert_file,
+        key_file=key_file,
+        cert_fingerprint=fingerprint,
+        allow_cidrs=allow_cidrs or [],
+        enrollment_credentials=enrollment,
+        config_path=config_path,
+    )
+    save_server_config(config, config_path)
+    return config
 
 
 def load_authoritative_checksums() -> Dict[str, str]:
@@ -420,6 +1541,14 @@ class EDRServer:
         self._security_events = collections.deque(maxlen=1000)
         self._telemetry_events = collections.deque(maxlen=500)
         self._sock: Optional[socket.socket] = None
+
+    def update_credentials(self, psk: Optional[str] = None, allow_nets: Optional[List[IPv4Network]] = None):
+        """Updates pre-shared key and allowed networks at runtime."""
+        with self._lock:
+            if psk:
+                self._psk = psk.encode()
+            if allow_nets is not None:
+                self.allow_nets = allow_nets
 
     def start(self):
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -716,8 +1845,10 @@ class App:
         tls_context: Optional[ssl.SSLContext],
         fingerprint: Optional[str],
         allow_nets: Optional[List[IPv4Network]],
+        config: Optional[ServerConfig] = None,
     ):
         self.root = root
+        self.config = config
         self.root.title("EDR Server // Endpoint Detection, Response & Defense Platform")
         self.root.geometry("1340x860")
         self.root.minsize(1050, 680)
@@ -811,9 +1942,12 @@ class App:
                                          fg=C["peach"], font=(MONO, 10, "bold"))
         self._lbl_alert_badge.pack(side="left", padx=12)
 
+        ttk.Button(topbar, text="⚙️ Config", command=self._show_config_dialog).pack(side="right", padx=4)
+        ttk.Button(topbar, text="🔑 Enrollment", command=self._show_enrollment_dialog).pack(side="right", padx=4)
+        ttk.Button(topbar, text="📦 Build Package", command=self._show_package_builder_dialog).pack(side="right", padx=4)
         self._lbl_clock = tk.Label(topbar, text="", bg=C["crust"], fg=C["overlay0"],
                                     font=(MONO, 10))
-        self._lbl_clock.pack(side="right", padx=16)
+        self._lbl_clock.pack(side="right", padx=8)
 
         # Main split
         pane = ttk.PanedWindow(self.root, orient="horizontal")
@@ -2103,6 +3237,43 @@ class App:
             self.root.after(1000, tick)
         tick()
 
+    def _show_config_dialog(self):
+        ServerConfigDialog(self.root, self.config, on_reload=self._reload_config)
+
+    def _show_enrollment_dialog(self):
+        creds = (
+            self.config.to_enrollment_credentials()
+            if self.config
+            else generate_enrollment_credentials(
+                self._host, self._port, self.server._psk.decode("utf-8", errors="replace"),
+                self._fingerprint or "", self._tls
+            )
+        )
+        EnrollmentCredentialsDialog(self.root, creds)
+
+    def _show_package_builder_dialog(self):
+        creds = (
+            self.config.to_enrollment_credentials()
+            if self.config
+            else generate_enrollment_credentials(
+                self._host, self._port, self.server._psk.decode("utf-8", errors="replace"),
+                self._fingerprint or "", self._tls
+            )
+        )
+        AgentPackageBuilderDialog(self.root, credentials=creds, config=self.config)
+
+    def _reload_config(self):
+        try:
+            cfg_path = self.config.config_path if self.config else DEFAULT_CONFIG_FILE
+            new_cfg = reload_server_config(self.config, cfg_path)
+            self.config = new_cfg
+            self.server.update_credentials(psk=new_cfg.psk)
+            self._log(f"[+] Reloaded configuration from {cfg_path}", "success")
+            messagebox.showinfo("Configuration Reloaded", f"Successfully reloaded configuration from:\n{cfg_path}")
+        except Exception as e:
+            self._log(f"[!] Failed to reload configuration: {e}", "error")
+            messagebox.showerror("Reload Error", f"Failed reloading configuration: {e}")
+
 
 # ════════════════════════════════════════════════════════════════
 #  Entry Point
@@ -2125,47 +3296,142 @@ def ensure_server_dependencies():
 
 def main():
     p = argparse.ArgumentParser(description="Secure Endpoint Detection, Response & Defense Server")
-    p.add_argument("--host",   default=DEFAULT_HOST, help="Bind address (default: 0.0.0.0)")
-    p.add_argument("--port",   type=int, default=DEFAULT_PORT, help="TCP port (default: 4444)")
+    p.add_argument("--host",   default=None, help=f"Bind address (default: {DEFAULT_HOST} or from config)")
+    p.add_argument("--port",   type=int, default=None, help=f"TCP port (default: {DEFAULT_PORT} or from config)")
     p.add_argument("--psk",    default=None, help="Pre-shared key for agent auth (auto-generated if omitted)")
-    p.add_argument("--cert",   default=CERT_FILE, help=f"TLS certificate PEM (default: {CERT_FILE})")
-    p.add_argument("--key",    default=KEY_FILE, help=f"TLS private key PEM (default: {KEY_FILE})")
+    p.add_argument("--cert",   default=None, help=f"TLS certificate PEM (default: {CERT_FILE} or from config)")
+    p.add_argument("--key",    default=None, help=f"TLS private key PEM (default: {KEY_FILE} or from config)")
     p.add_argument("--no-tls", action="store_true", help="Disable TLS — NOT recommended for production")
     p.add_argument("--allow",  action="append", metavar="CIDR", help="Restrict incoming connections to CIDR (repeatable)")
     p.add_argument("--install-deps", action="store_true", help="Install missing server dependencies (e.g. cryptography)")
+    p.add_argument("--config", default=DEFAULT_CONFIG_FILE, help=f"Configuration file path (default: {DEFAULT_CONFIG_FILE})")
+    p.add_argument("--wizard", "--first-run", action="store_true", dest="wizard", help="Force launch first-run configuration wizard")
+    p.add_argument("--headless", "--non-interactive", action="store_true", dest="headless", help="Run without interactive GUI prompts")
+    p.add_argument("--reload", action="store_true", help="Validate and reload existing configuration from disk, then exit")
+    p.add_argument("--build-package", choices=["linux", "windows", "all"], default=None, help="Build deployable agent package archive and exit")
+    p.add_argument("--package-output", default=None, help="Target output file or directory for built package")
+    p.add_argument("--package-host", default=None, help="Server host override for built package")
+    p.add_argument("--package-port", type=int, default=None, help="Server port override for built package")
+    p.add_argument("--package-psk", default=None, help="PSK override for built package")
+    p.add_argument("--package-fingerprint", default=None, help="Certificate fingerprint override for built package")
+    p.add_argument("--package-group", default=None, help="Group tag override for built package (e.g. servers)")
+    p.add_argument("--package-interval", type=int, default=10, help="Polling/heartbeat interval override in seconds")
     args = p.parse_args()
 
     if args.install_deps:
         ensure_server_dependencies()
 
-    psk = ensure_psk(PSK_FILE, args.psk)
+    config_path = args.config
+
+    if args.reload:
+        cfg = load_server_config(config_path)
+        print(f"[+] Successfully loaded and validated configuration from {config_path}")
+        print(f"    Server: {cfg.host}:{cfg.port}")
+        print(f"    TLS: {cfg.use_tls}")
+        print(f"    Fingerprint: {cfg.cert_fingerprint}")
+        print(f"    PSK: {mask_credential(cfg.psk)}")
+        return
+
+    is_first_run = not os.path.exists(config_path) or args.wizard
+
+    if is_first_run:
+        interactive = not args.headless and not args.build_package
+        if interactive and os.name == "posix" and not os.environ.get("DISPLAY"):
+            interactive = False
+
+        config = run_config_wizard(
+            config_path=config_path,
+            interactive=interactive,
+            host=args.host or DEFAULT_HOST,
+            port=args.port or DEFAULT_PORT,
+            psk=args.psk,
+            use_tls=not args.no_tls,
+            cert_file=args.cert or CERT_FILE,
+            key_file=args.key or KEY_FILE,
+            allow_cidrs=args.allow or [],
+        )
+    else:
+        config = load_server_config(config_path)
+        if args.host is not None:
+            config.host = args.host
+        if args.port is not None:
+            config.port = args.port
+        if args.psk is not None:
+            config.psk = args.psk
+        if args.cert is not None:
+            config.cert_file = args.cert
+        if args.key is not None:
+            config.key_file = args.key
+        if args.no_tls:
+            config.use_tls = False
+        if args.allow is not None:
+            config.allow_cidrs = args.allow
+
+    set_restrictive_permissions(config_path)
+    if os.path.exists(config.key_file):
+        set_restrictive_permissions(config.key_file)
+    if os.path.exists(config.psk_file):
+        set_restrictive_permissions(config.psk_file)
+
+    psk = config.psk
     print(f"\n{'='*60}")
-    print(f"  PSK  →  {psk}")
+    print(f"  PSK  ->  {psk}")
     print("  Configure PSK in agents/windows/Agent-Core.ps1 or agents/linux/agent_core.py")
 
     tls_context: Optional[ssl.SSLContext] = None
-    fingerprint: Optional[str] = None
+    fingerprint: Optional[str] = config.cert_fingerprint
 
-    if not args.no_tls:
-        fingerprint = ensure_cert(args.cert, args.key)
-        if fingerprint:
-            with open(FPRINT_FILE, "w") as f:
-                f.write(fingerprint)
-            print(f"\n  Cert fingerprint  →  {fingerprint}")
+    if config.use_tls:
+        fp = ensure_cert(config.cert_file, config.key_file)
+        if fp:
+            fingerprint = fp
+            config.cert_fingerprint = fp
+            secure_write_file(config.fingerprint_file, fingerprint)
+            print(f"\n  Cert fingerprint  ->  {fingerprint}")
             print("  Configure $CertThumbprint or CERT_FINGERPRINT in agents")
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-            ctx.load_cert_chain(args.cert, args.key)
+            ctx.load_cert_chain(config.cert_file, config.key_file)
             tls_context = ctx
         else:
-            print("\n  WARNING: TLS unavailable — traffic will be unencrypted")
+            print("\n  WARNING: TLS unavailable -- traffic will be unencrypted")
     else:
-        print("\n  WARNING: TLS disabled — traffic will be unencrypted")
+        print("\n  WARNING: TLS disabled -- traffic will be unencrypted")
     print(f"{'='*60}\n")
+ 
+    if args.build_package:
+        target_os_list = ["linux", "windows"] if args.build_package == "all" else [args.build_package]
+        for target_os in target_os_list:
+            print(f"[*] Building {target_os} agent package via CLI...")
+            try:
+                res_path = build_agent_package(
+                    os_type=target_os,
+                    output_path=args.package_output if args.build_package != "all" else None,
+                    server_host=args.package_host or config.host,
+                    server_port=args.package_port or config.port,
+                    psk=args.package_psk or config.psk,
+                    cert_fingerprint=args.package_fingerprint or fingerprint or config.cert_fingerprint,
+                    use_tls=config.use_tls and not args.no_tls,
+                    polling_interval=args.package_interval if args.package_interval is not None else 10,
+                    group_tag=args.package_group or "default",
+                    config=config
+                )
+                with open(res_path, "rb") as f:
+                    sha256 = hashlib.sha256(f.read()).hexdigest()
+                size_bytes = os.path.getsize(res_path)
+                print(f"[+] Agent package created successfully:")
+                print(f"    Target:  {target_os}")
+                print(f"    Path:    {res_path}")
+                print(f"    SHA256:  {sha256}")
+                print(f"    Size:    {size_bytes:,} bytes")
+            except Exception as e:
+                print(f"[!] Package build failed for {target_os}: {e}")
+                sys.exit(1)
+        return
 
     allow_nets: List[IPv4Network] = []
-    if args.allow:
-        for cidr in args.allow:
+    if config.allow_cidrs:
+        for cidr in config.allow_cidrs:
             try:
                 allow_nets.append(ip_network(cidr, strict=False))
                 print(f"[*] IP restriction: {cidr}")
@@ -2173,12 +3439,23 @@ def main():
                 print(f"[!] Invalid CIDR '{cidr}': {e}")
 
     AUDIT.info("SERVER_START  host=%s  port=%d  tls=%s  allow=%s",
-               args.host, args.port, tls_context is not None,
+               config.host, config.port, tls_context is not None,
                [str(n) for n in allow_nets] or "any")
+
+    if args.headless:
+        print(f"[+] Headless server running on {config.host}:{config.port} (Ctrl+C to stop)...")
+        server = EDRServer(config.host, config.port, psk, tls_context, allow_nets)
+        server.start()
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("[*] Server shutting down...")
+        return
 
     root = tk.Tk()
     root.tk_setPalette(background=C["base"], foreground=C["text"])
-    App(root, args.host, args.port, psk, tls_context, fingerprint, allow_nets)
+    App(root, config.host, config.port, psk, tls_context, fingerprint, allow_nets, config=config)
     root.mainloop()
 
 

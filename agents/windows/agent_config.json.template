@@ -1,0 +1,19 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 4444,
+    "use_tls": true,
+    "cert_fingerprint": "",
+    "reconnect_interval": 10,
+    "max_reconnect_delay": 60
+  },
+  "auth": {
+    "psk": "PASTE_ENROLLMENT_PSK_HERE"
+  },
+  "agent": {
+    "log_level": "INFO",
+    "fim_enabled": true,
+    "dlp_enabled": true,
+    "dlp_block_transfers": false
+  }
+}

@@ -116,5 +116,96 @@ def main():
             proc.kill()
         server._sock.close()
 
+
+import unittest
+import tempfile
+import zipfile
+import hashlib
+from agents.windows.package_windows_agent import build_windows_package, REQUIRED_SERVICES, REQUIRED_MODULES
+
+
+class TestWindowsAgentSuite(unittest.TestCase):
+    """Automated unit and integration test suite for Windows agent packaging, installation, and runtime (Issue #30)."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_windows_agent_live_defense_integration(self):
+        """Runs live Windows agent integration tests against EDRServer."""
+        main()
+
+    def test_windows_agent_packaging_and_manifest(self):
+        """Issue #30: Validates automated Windows agent packaging and cryptographic manifest integrity."""
+        zip_path = os.path.join(self.temp_dir.name, "win_agent_test.zip")
+        res_zip = build_windows_package(zip_path, version="1.0.0")
+        self.assertTrue(os.path.isfile(res_zip))
+
+        with zipfile.ZipFile(res_zip, "r") as zf:
+            namelist = zf.namelist()
+            self.assertIn("Server-EDR-Agent-Windows-v1.0.0/Agent-Core.ps1", namelist)
+            self.assertIn("Server-EDR-Agent-Windows-v1.0.0/MANIFEST.json", namelist)
+            self.assertIn("Server-EDR-Agent-Windows-v1.0.0/checksums.sha256", namelist)
+
+            # Validate each module
+            for mod in REQUIRED_MODULES:
+                self.assertIn(f"Server-EDR-Agent-Windows-v1.0.0/Modules/{mod}", namelist)
+
+            # Validate each service script
+            for svc in REQUIRED_SERVICES:
+                self.assertIn(f"Server-EDR-Agent-Windows-v1.0.0/Service/{svc}", namelist)
+
+            # Verify manifest hashes
+            manifest_bytes = zf.read("Server-EDR-Agent-Windows-v1.0.0/MANIFEST.json")
+            manifest = json.loads(manifest_bytes.decode("utf-8"))
+            for rel_path, expected_hash in manifest.items():
+                zip_member = f"Server-EDR-Agent-Windows-v1.0.0/{rel_path}"
+                actual_hash = hashlib.sha256(zf.read(zip_member)).hexdigest()
+                self.assertEqual(actual_hash, expected_hash, f"Manifest hash mismatch for {rel_path}")
+
+    def test_windows_agent_installation_and_runtime_validation(self):
+        """Issue #30: Validates Windows service installer DryRun and runtime configuration validation."""
+        cwd = os.path.dirname(os.path.abspath(__file__))
+        install_script = os.path.join(cwd, "agents", "windows", "Service", "Install-Service.ps1")
+        core_script = os.path.join(cwd, "agents", "windows", "Agent-Core.ps1")
+
+        # 1. Service Installer DryRun with preconfigured settings
+        cmd_install = [
+            "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", install_script,
+            "-DryRun",
+            "-ServerHost", "10.10.10.10",
+            "-ServerPort", "9443",
+            "-PSK", "automated_win_test_psk_key_12345",
+            "-GroupTag", "automated-win-group",
+            "-PollingInterval", "15"
+        ]
+        res_inst = subprocess.run(cmd_install, capture_output=True, text=True)
+        self.assertEqual(res_inst.returncode, 0, f"Install-Service.ps1 failed:\n{res_inst.stderr}\n{res_inst.stdout}")
+        self.assertIn("Preconfigured settings successfully validated", res_inst.stdout)
+
+        # 2. Agent-Core.ps1 -ValidateConfig runtime validation
+        temp_cfg = os.path.join(self.temp_dir.name, "valid_runtime.json")
+        with open(temp_cfg, "w", encoding="utf-8") as f:
+            json.dump({
+                "server": {"host": "127.0.0.1", "port": 4444, "use_tls": False},
+                "auth": {"psk": "valid_runtime_psk"},
+                "agent": {"group_tag": "runtime-group", "polling_interval": 10}
+            }, f)
+
+        cmd_val = [
+            "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", core_script,
+            "-ValidateConfig",
+            "-ConfigPath", temp_cfg
+        ]
+        res_val = subprocess.run(cmd_val, capture_output=True, text=True)
+        self.assertEqual(res_val.returncode, 0, f"ValidateConfig failed:\n{res_val.stderr}\n{res_val.stdout}")
+        self.assertIn("Configuration is valid", res_val.stdout)
+
+
 if __name__ == "__main__":
-    main()
+    unittest.main()
+

@@ -3,12 +3,15 @@
 # ============================================================
 
 param(
+    [string]$ConfigPath      = "",
     [string]$ServerHost      = "",
     [int]$ServerPort         = 0,
     [string]$PSK             = "",
     [string]$CertThumbprint  = "",
     [string]$UseTLSStr       = "",
     [int]$ReconnectSecs      = 0,
+    [switch]$ValidateConfig,
+    [switch]$CheckConnection,
     [switch]$InstallOpenEDR,
     [switch]$InstallDeps
 )
@@ -24,32 +27,69 @@ Import-Module (Join-Path $ModulesDir "Malware.psm1")  -Force
 Import-Module (Join-Path $ModulesDir "OpenEDR.psm1")  -Force
 Import-Module (Join-Path $ModulesDir "Executor.psm1") -Force
 
-# Resolve configurations with env var fallbacks
-if (-not $ServerHost) {
-    $ServerHost = if ($env:EDR_SERVER_HOST) { $env:EDR_SERVER_HOST } elseif ($env:RAT_SERVER_HOST) { $env:RAT_SERVER_HOST } else { "127.0.0.1" }
+# 1. Load baseline config from agent_config.json or env vars or defaults
+$config = Load-AgentConfig -ConfigPath $ConfigPath
+
+# 2. Command-line parameters take highest precedence
+if ($ServerHost) {
+    $config.server_host = $ServerHost
+    $config.server.host = $ServerHost
 }
-if ($ServerPort -le 0) {
-    $ServerPort = if ($env:EDR_SERVER_PORT) { [int]$env:EDR_SERVER_PORT } elseif ($env:RAT_SERVER_PORT) { [int]$env:RAT_SERVER_PORT } else { 4444 }
+if ($ServerPort -gt 0) {
+    $config.server_port = $ServerPort
+    $config.server.port = $ServerPort
 }
-if (-not $PSK) {
-    $PSK = if ($env:EDR_PSK) { $env:EDR_PSK } elseif ($env:RAT_PSK) { $env:RAT_PSK } else { "PASTE_PSK_HERE" }
+if ($PSK) {
+    $config.psk = $PSK
+    $config.auth.psk = $PSK
 }
-if (-not $CertThumbprint) {
-    $CertThumbprint = if ($env:EDR_CERT_FINGERPRINT) { $env:EDR_CERT_FINGERPRINT } elseif ($env:RAT_CERT_FINGERPRINT) { $env:RAT_CERT_FINGERPRINT } else { "" }
+if ($CertThumbprint) {
+    $config.cert_thumbprint = $CertThumbprint
+    $config.cert_fingerprint = $CertThumbprint
+    $config.server.cert_thumbprint = $CertThumbprint
+    $config.server.cert_fingerprint = $CertThumbprint
 }
-$UseTLS = if ($UseTLSStr -eq "0" -or $UseTLSStr -eq "false" -or $env:EDR_USE_TLS -eq "0" -or $env:EDR_USE_TLS -eq "false" -or $env:RAT_USE_TLS -eq "0" -or $env:RAT_USE_TLS -eq "false") { $false } else { $true }
-if ($ReconnectSecs -le 0) {
-    $ReconnectSecs = if ($env:EDR_RECONNECT_SECS) { [int]$env:EDR_RECONNECT_SECS } elseif ($env:RAT_RECONNECT_SECS) { [int]$env:RAT_RECONNECT_SECS } else { 10 }
+if ($UseTLSStr -ne "") {
+    $useTlsBool = ($UseTLSStr -notin @("0", "false", "no", "off"))
+    $config.use_tls = $useTlsBool
+    $config.server.use_tls = $useTlsBool
+}
+if ($ReconnectSecs -gt 0) {
+    $config.reconnect_secs = $ReconnectSecs
+    $config.server.reconnect_interval = $ReconnectSecs
 }
 
-$FIMEnabled         = $true
-$DLPEnabled         = $true
-$DLPBlockTransfer   = $false
-$QuarantineDir      = Get-QuarantineDir
-Ensure-QuarantineDir $QuarantineDir
+$ServerHost     = $config.server_host
+$ServerPort     = $config.server_port
+$PSK            = $config.psk
+$CertThumbprint = $config.cert_thumbprint
+$UseTLS         = $config.use_tls
+$ReconnectSecs  = $config.reconnect_secs
 
-Register-FIMSelfProtect $PSCommandPath
-Register-FIMSelfProtect $QuarantineDir
+$FIMEnabled         = $config.fim_enabled
+$DLPEnabled         = $config.dlp_enabled
+$DLPBlockTransfer   = $config.dlp_block_transfer
+
+# 3. Handle explicit CLI action switches
+if ($ValidateConfig) {
+    $val = Validate-AgentConfig $config
+    $statusStr = if ($val.IsValid) { "VALID" } else { "INVALID" }
+    Write-Host "[*] Configuration Status: $statusStr ($($val.Summary))"
+    Write-Host "    Host: ${ServerHost}:${ServerPort}"
+    Write-Host "    PSK:  $(Get-MaskedSecret $PSK)"
+    Write-Host "    TLS:  $UseTLS"
+    if ($CertThumbprint) {
+        Write-Host "    Cert: $CertThumbprint"
+    }
+    if ($val.IsValid) { exit 0 } else { exit 1 }
+}
+
+if ($CheckConnection) {
+    Write-Host "[*] Probing server endpoint at ${ServerHost}:${ServerPort}..."
+    $res = Test-ServerConnectivity -ServerHost $ServerHost -ServerPort $ServerPort
+    Write-Host "[*] Endpoint Probe: $($res.Message)"
+    if ($res.Success) { exit 0 } else { exit 1 }
+}
 
 # Direct installation flags
 if ($InstallOpenEDR -or $InstallDeps) {
@@ -58,6 +98,12 @@ if ($InstallOpenEDR -or $InstallDeps) {
     Write-Host "[*] Result ($($res.status)): $($res.message)"
     return
 }
+
+$QuarantineDir      = Get-QuarantineDir
+Ensure-QuarantineDir $QuarantineDir
+
+Register-FIMSelfProtect $PSCommandPath
+Register-FIMSelfProtect $QuarantineDir
 
 # Auto-install OpenEDR if configured and missing
 $autoInstall = if ($env:EDR_AUTO_INSTALL_OPENEDR -eq "1" -or $env:EDR_AUTO_INSTALL_OPENEDR -eq "true" -or $env:RAT_AUTO_INSTALL_OPENEDR -eq "1" -or $env:RAT_AUTO_INSTALL_OPENEDR -eq "true") { $true } else { $false }

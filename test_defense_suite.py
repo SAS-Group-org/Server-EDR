@@ -995,6 +995,109 @@ class TestEndpointDefense(unittest.TestCase):
         finally:
             shutil.rmtree(test_dir, ignore_errors=True)
 
+    # 18. Defense Suite Component Packaging & Manifest Integrity (Issue #28)
+    def test_defense_suite_package_and_manifest_integrity(self):
+        """Verifies all defense modules are bundled in packages and match cryptographic manifests."""
+        from agents.linux.package_linux_agent import build_linux_package
+        from agents.windows.package_windows_agent import build_windows_package
+        import tarfile
+        import zipfile
+
+        test_dir = tempfile.mkdtemp(prefix="defense_pkg_test_")
+        try:
+            # 1. Linux Defense Package
+            linux_pkg = os.path.join(test_dir, "defense-linux.tar.gz")
+            res_linux = build_linux_package(linux_pkg)
+            self.assertTrue(os.path.isfile(res_linux))
+            with tarfile.open(res_linux, "r:gz") as tar:
+                manifest_f = tar.extractfile("server-edr-agent/MANIFEST.json")
+                self.assertIsNotNone(manifest_f)
+                manifest = json.loads(manifest_f.read().decode("utf-8"))
+                for mod in ["fim.py", "dlp.py", "malware.py", "openedr.py", "executor.py"]:
+                    key = f"server-edr-agent/modules/{mod}"
+                    self.assertIn(key, manifest, f"Defense module {mod} missing from manifest")
+                    member = tar.getmember(key)
+                    data = tar.extractfile(member).read()
+                    actual_sha = hashlib.sha256(data).hexdigest()
+                    self.assertEqual(actual_sha, manifest[key], f"SHA256 mismatch for {mod}")
+
+            # 2. Windows Defense Package
+            win_pkg = os.path.join(test_dir, "defense-windows.zip")
+            res_win = build_windows_package(win_pkg)
+            self.assertTrue(os.path.isfile(res_win))
+            with zipfile.ZipFile(res_win, "r") as zf:
+                manifest_data = zf.read("Server-EDR-Agent-Windows-v1.0.0/MANIFEST.json")
+                manifest = json.loads(manifest_data.decode("utf-8"))
+                for mod in ["FIM.psm1", "DLP.psm1", "Malware.psm1", "OpenEDR.psm1", "Executor.psm1"]:
+                    key = f"Modules/{mod}"
+                    zip_entry = f"Server-EDR-Agent-Windows-v1.0.0/Modules/{mod}"
+                    self.assertIn(key, manifest, f"Windows defense module {mod} missing from manifest")
+                    actual_sha = hashlib.sha256(zf.read(zip_entry)).hexdigest()
+                    self.assertEqual(actual_sha, manifest[key], f"SHA256 mismatch for {mod}")
+        finally:
+            shutil.rmtree(test_dir, ignore_errors=True)
+
+    # 19. Defense Modules Dynamic Configuration Validation & Runtime State (Issue #28)
+    def test_defense_modules_dynamic_configuration(self):
+        """Verifies defense module flags are validated and correctly applied to runtime globals."""
+        from modules.common import load_agent_config, apply_agent_config, validate_agent_config
+        import modules.common as common
+
+        test_dir = tempfile.mkdtemp(prefix="defense_cfg_test_")
+        try:
+            cfg_path = os.path.join(test_dir, "agent_config.json")
+            cfg_content = {
+                "server": {"host": "127.0.0.1", "port": 4444, "use_tls": False},
+                "auth": {"psk": "defense_test_psk_key_123"},
+                "agent": {
+                    "log_level": "DEBUG",
+                    "fim_enabled": True,
+                    "fim_check_interval_secs": 45,
+                    "dlp_enabled": True,
+                    "dlp_block_transfers": True,
+                    "openedr_log_path": "/var/log/edrsvc/events_test"
+                }
+            }
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(cfg_content, f)
+
+            loaded = load_agent_config(cfg_path)
+            is_valid, errors = validate_agent_config(loaded)
+            self.assertTrue(is_valid, f"Defense configuration validation failed: {errors}")
+
+            apply_agent_config(loaded)
+            self.assertTrue(common.FIM_ENABLED)
+            self.assertEqual(common.FIM_CHECK_INTERVAL_SECS, 45)
+            self.assertTrue(common.DLP_ENABLED)
+            self.assertTrue(common.DLP_BLOCK_TRANSFERS)
+            self.assertEqual(common.OPENEDR_LOG_PATH, "/var/log/edrsvc/events_test")
+        finally:
+            shutil.rmtree(test_dir, ignore_errors=True)
+
+    # 20. Defense Subsystems Package Permissions & Service Setup (Issue #28)
+    def test_defense_package_permissions_and_service_setup(self):
+        """Verifies executable POSIX permissions and service installation units in packaged defense archives."""
+        from agents.linux.package_linux_agent import build_linux_package
+        import tarfile
+
+        test_dir = tempfile.mkdtemp(prefix="defense_perm_test_")
+        try:
+            linux_pkg = os.path.join(test_dir, "perm-linux.tar.gz")
+            build_linux_package(linux_pkg)
+            with tarfile.open(linux_pkg, "r:gz") as tar:
+                # Core script and installer must have executable mode 0755
+                core_info = tar.getmember("server-edr-agent/agent_core.py")
+                self.assertEqual(core_info.mode & 0o777, 0o755, "agent_core.py must have 0755 permissions")
+
+                inst_info = tar.getmember("server-edr-agent/install_service.sh")
+                self.assertEqual(inst_info.mode & 0o777, 0o755, "install_service.sh must have 0755 permissions")
+
+                # Systemd service unit must be present
+                svc_info = tar.getmember("server-edr-agent/systemd/server-edr.service")
+                self.assertIsNotNone(svc_info)
+        finally:
+            shutil.rmtree(test_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()
