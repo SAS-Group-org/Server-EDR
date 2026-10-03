@@ -38,7 +38,7 @@ except ImportError:
     build_windows_package = None
 
 # ─────────────────────────────────────────────────────────────
-DEFAULT_HOST            = "0.0.0.0"
+DEFAULT_HOST            = "127.0.0.1"
 DEFAULT_C2_PORT         = 443       # Migrated from 4444
 DEFAULT_PORT            = DEFAULT_C2_PORT
 DEFAULT_WEB_PORT        = 8443      # Web Portal binding port
