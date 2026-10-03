@@ -1,7 +1,7 @@
 {
   "server": {
     "host": "127.0.0.1",
-    "port": 4444,
+    "port": 443,
     "use_tls": true,
     "cert_fingerprint": "",
     "reconnect_interval": 10,

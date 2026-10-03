@@ -4,7 +4,7 @@
 [![Python: 3.8+](https://img.shields.io/badge/Python-3.8+-brightgreen.svg)](https://www.python.org/)
 [![PowerShell: 5.1+](https://img.shields.io/badge/PowerShell-5.1+-blue.svg)](https://microsoft.com/powershell)
 [![Platform: Linux%20|%20Windows](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-lightgrey.svg)](#capabilities--feature-matrix)
-[![Tests: 100/100 Passing](https://img.shields.io/badge/Tests-100%2F100%20Passing-success.svg)](#running-the-automated-test-suite)
+[![Tests: 113/113 Passing](https://img.shields.io/badge/Tests-113%2F113%20Passing-success.svg)](#running-the-automated-test-suite)
 
 Production-grade Remote Administration and Endpoint Detection & Defense platform featuring TLS 1.2+ encryption with SHA-256 certificate pinning, HMAC-SHA256 mutual authentication, duplex asynchronous security telemetry, cryptographic script attestation, automated distribution package builders, and production system services for Windows (`SCM`) and Linux (`systemd`).
 
@@ -14,12 +14,12 @@ Production-grade Remote Administration and Endpoint Detection & Defense platform
 1. [Capabilities & Feature Matrix](#capabilities--feature-matrix)
 2. [Architecture & Protocol](#architecture--protocol)
 3. [Server First-Run Setup](#server-first-run-setup)
-4. [Agent Package Builder (GUI & CLI)](#agent-package-builder-gui--cli)
+4. [Agent Package Builder (CLI & Packaging)](#agent-package-builder-cli--packaging)
 5. [Linux Endpoint Deployment](#linux-endpoint-deployment)
 6. [Windows Endpoint Deployment](#windows-endpoint-deployment)
 7. [Defensive Subsystems](#defensive-subsystems)
 8. [Defensive Command Reference](#defensive-command-reference)
-9. [Management Console UI](#management-console-ui)
+9. [Web Management Portal & REST/WebSocket API](#web-management-portal--restwebsocket-api)
 10. [Cryptographic Attestation & Anti-Tamper](#cryptographic-attestation--anti-tamper)
 11. [Running the Automated Test Suite](#running-the-automated-test-suite)
 12. [Documentation & Security Policies](#documentation--security-policies)
@@ -34,14 +34,14 @@ Production-grade Remote Administration and Endpoint Detection & Defense platform
 | **Encrypted C2 Transport** | TLS 1.2+ (Pinned Thumbprint) | TLS 1.2+ (Pinned Thumbprint) | Multi-threaded TLS Server |
 | **Authentication** | HMAC-SHA256 Challenge | HMAC-SHA256 Challenge | Constant-time `compare_digest` |
 | **Configuration Subsystem** | Dynamic Hierarchical Loader | Dynamic Hierarchical Loader | Interactive & Headless Wizard |
-| **Package Builder** | Standalone Script & ZIP Archive | Standalone Script & TAR.GZ | Tkinter GUI Modal & CLI flags |
+| **Package Builder** | Standalone Script & ZIP Archive | Standalone Script & TAR.GZ | Web Portal & CLI flags |
 | **Service Automation** | Windows SCM + Recovery Watchdog | Hardened `systemd` Sandboxed | Native background daemon |
-| **Remote Admin Shell** | Interactive PowerShell | Interactive Bash | Terminal tab with history |
-| **Process Management** | Live inspection & Kill | Live inspection & Kill | Processes tab |
-| **Remote File Explorer** | Windows paths, upload/download | Linux paths, upload/download | Remote Files tab |
-| **Asynchronous Event Bus** | Streaming `event` frames | Streaming `event` frames | Real-time Security Alerts tab |
+| **Remote Admin Shell** | Interactive PowerShell | Interactive Bash | Web Terminal with history |
+| **Process Management** | Live inspection & Kill | Live inspection & Kill | Web Processes tab |
+| **Remote File Explorer** | Windows paths, upload/download | Linux paths, upload/download | Web Files tab |
+| **Asynchronous Event Bus** | Streaming `event` frames | Streaming `event` frames | Real-time WebSocket Live-Stream |
 | **Malware Prevention** | Windows Defender + Hashes | Hash DB + Heuristics + ClamAV | Scanner & Threat feed |
-| **Quarantine Vault** | Stripped ACLs & `.meta` | `chmod 0600` & `.meta` | Vault browser & Restore |
+| **Quarantine Vault** | Stripped ACLs & `.meta` | `chmod 0600` & `.meta` | Vault browser & REST API |
 | **File Integrity (FIM)** | Registry & Critical files | `/etc` configuration baseline | Baseline Init & Delta Audits |
 | **Data Loss Prevention (DLP)**| Cards (Luhn), SSN, Keys, JWT | Cards (Luhn), SSN, Keys, JWT | In-band transfer inspection |
 | **Removable Media** | WMI Device Arrival Events | `/proc/mounts` USB Detection | Real-time USB attach alerts |
@@ -53,7 +53,7 @@ Production-grade Remote Administration and Endpoint Detection & Defense platform
 
 ## Architecture & Protocol
 
-Server-EDR utilizes an outbound-only C2 architecture where endpoints initiate connections to the management server over a single TCP port (default `4444`). 
+Server-EDR utilizes an outbound-only C2 architecture where endpoints initiate connections to the management server over a single TCP port (default `443`), alongside an embedded HTTPS REST and WebSocket Web Management Portal (default port `8443`).
 
 ```
 +-------------------------------------------------------------+
@@ -66,14 +66,24 @@ Server-EDR utilizes an outbound-only C2 architecture where endpoints initiate co
 |               |                             |               |
 |               +--------------+--------------+               |
 |                              |                              |
-|                              | TLS 1.2+ (Pinned Thumbprint) |
+|                              | TCP Port 443 (TLS 1.2+)      |
 |                              | HMAC-SHA256 Auth Challenge   |
 |                              | Duplex 4-byte Length-Prefix  |
 |                              v                              |
 |                 +-------------------------+                 |
-|                 | Server-EDR Management   |                 |
-|                 | Console & Telemetry Hub |                 |
+|                 | Server-EDR C2 Engine    |                 |
+|                 | & Headless Telemetry Hub|                 |
+|                 +------------+------------+                 |
+|                              |                              |
+|                              | Shared TLS Context & Bus     |
+|                              v                              |
 |                 +-------------------------+                 |
+|                 | Web Management Portal   |                 |
+|                 | HTTPS / REST / WS :8443 |                 |
+|                 +-------------------------+                 |
+|                              ^                              |
+|                              | HTTPS / WSS                  |
+|                        [SecOps Browser]                     |
 +-------------------------------------------------------------+
 ```
 
@@ -96,7 +106,8 @@ python Server.py
 
 The wizard prompts for:
 - **Listen Host:** `0.0.0.0` (all interfaces) or specific network interface.
-- **Listen Port:** Default `4444`.
+- **Listen Port (C2):** Default `443`.
+- **Web Portal Port:** Default `8443`.
 - **Pre-Shared Key (PSK):** Generates a 32-byte (256-bit) cryptographically strong PSK, or accepts an existing key.
 - **TLS Certificate & Key:** Generates a 4096-bit self-signed RSA certificate and private key with SAN extensions, or accepts custom certificate paths.
 
@@ -105,14 +116,15 @@ For automated or containerized deployments, execute the setup non-interactively:
 
 ```bash
 # Automated setup with generated credentials:
-python Server.py --init --non-interactive --listen-host 0.0.0.0 --listen-port 4444
+python Server.py --init --non-interactive --listen-host 0.0.0.0 --listen-port 443 --web-port 8443
 
 # Automated setup with custom pre-existing credentials:
 python Server.py \
   --init \
   --non-interactive \
   --listen-host 192.168.1.100 \
-  --listen-port 4444 \
+  --listen-port 443 \
+  --web-port 8443 \
   --psk 4f8a9b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a \
   --cert /path/to/server.crt \
   --key /path/to/server.key
@@ -121,23 +133,16 @@ python Server.py \
 ### 3. Server Configuration & Security
 Configuration and security files generated on first run:
 - `server_config.json`: Master server configuration (POSIX `0600` on Linux, restricted DACL on Windows).
-- `edr_server.crt`: 4096-bit TLS certificate presented to agents.
+- `edr_server.crt`: 4096-bit TLS certificate presented to agents and HTTPS web clients.
 - `edr_server.key`: Private key (permissions restricted strictly to administrator).
 - `edr_psk.txt`: Pre-shared authentication key.
 - `edr_fingerprint.txt`: SHA-256 certificate thumbprint used for client-side pinning.
 
 ---
 
-## Agent Package Builder (GUI & CLI)
+## Agent Package Builder (CLI & Packaging)
 
 Server-EDR includes an automated package generator that creates standalone, pre-configured distribution archives for Linux and Windows endpoints.
-
-### GUI Package Builder Dialog
-1. In the Server management console, click the **"Build Agent Package..."** button in the top toolbar.
-2. Select target platform: **Linux (.tar.gz)**, **Windows (.zip)**, or **Both Platforms**.
-3. Live server parameters (Host, Port, PSK, and Fingerprint) are automatically pre-populated.
-4. Set optional **Agent Group** tags and **Polling Intervals**.
-5. Select the destination directory and click **"Generate Package(s)"**.
 
 ### Headless CLI Package Builder
 Build deployment bundles directly from the command line:
@@ -151,7 +156,7 @@ python Server.py \
   --build-package linux \
   --package-output ./dist \
   --package-host 192.168.1.100 \
-  --package-port 4444 \
+  --package-port 443 \
   --package-group "Web-Servers"
 
 # Generate a Windows package:
@@ -159,7 +164,7 @@ python Server.py \
   --build-package windows \
   --package-output ./dist \
   --package-host 192.168.1.100 \
-  --package-port 4444 \
+  --package-port 443 \
   --package-group "Workstations"
 ```
 
@@ -179,13 +184,13 @@ The Linux agent (`agent_core.py`) resolves its configuration dynamically using t
 # Run with explicit command-line flags:
 python3 agents/linux/agent_core.py \
   --server-host 192.168.1.100 \
-  --server-port 4444 \
+  --server-port 443 \
   --psk <PASTE_PSK> \
   --cert-fingerprint <PASTE_FINGERPRINT>
 
 # Or run with environment variables:
 export EDR_SERVER_HOST="192.168.1.100"
-export EDR_SERVER_PORT="4444"
+export EDR_SERVER_PORT="443"
 export EDR_PSK="<PASTE_PSK>"
 export EDR_CERT_FINGERPRINT="<PASTE_FINGERPRINT>"
 python3 agents/linux/agent_core.py
@@ -227,7 +232,7 @@ The Windows agent (`Agent-Core.ps1`) resolves configuration dynamically:
 ```powershell
 powershell -ExecutionPolicy Bypass -File agents\windows\Agent-Core.ps1 `
   -ServerHost "192.168.1.100" `
-  -ServerPort 4444 `
+  -ServerPort 443 `
   -PSK "<PASTE_PSK>" `
   -CertThumbprint "<PASTE_FINGERPRINT>"
 ```
@@ -300,18 +305,29 @@ powershell -ExecutionPolicy Bypass -File Install-Agent.ps1
 
 ---
 
-## Management Console UI
+## Web Management Portal & REST/WebSocket API
 
-1. **Terminal Tab:** Remote interactive shell (`PS >` for Windows, `$ >` for Linux) with full history.
-2. **Processes Tab:** Live process inspection, memory metrics, filter bar, and process termination (`kill`).
-3. **Files Tab:** OS-aware remote file explorer with secure upload and download capabilities.
-4. **Sysinfo Tab:** Hardware specs, operating system details, administrative privileges, and defense statuses.
-5. **Security Alerts Tab:** Central real-time feed for FIM, DLP, Malware, and OpenEDR alerts with severity tags.
-6. **Malware & Quarantine Tab:** On-demand path scanner, quarantine vault manager, and file restoration interface.
-7. **FIM Tab:** Baseline management, manual audit triggers, and real-time modification log.
-8. **DLP Tab:** Sensitive data inspection, exfiltration attempt logs, and removable USB tracking.
-9. **OpenEDR Tab:** OpenEDR service health, live kernel telemetry viewer, and Emergency Host Isolation button.
-10. **Agent Package Builder Dialog:** Accessible via the top toolbar button **"Build Agent Package..."**.
+Server-EDR features a completely headless server architecture with an embedded HTTPS Web Portal listening on port **8443** (configurable via `--web-port`), sharing the C2 server's TLS context and credentials. SecOps operators access the interface through any modern web browser at `https://<server-ip>:8443/`.
+
+### 1. Single Page Application (SPA) Defense Console
+The web interface is rendered directly by the server (no external runtime or nodejs required) with five core defensive tabs:
+1. **Security Alerts Tab:** Central real-time feed for FIM, DLP, Malware, and OpenEDR alerts with severity filters (CRITICAL, HIGH, MEDIUM, LOW) and agent identification.
+2. **Malware & Quarantine Tab:** Endpoint on-demand path scanner (`scan_path`), quarantine vault audit viewer, and single-click file restoration.
+3. **File Integrity (FIM) Tab:** Baseline generation (`fim_init`), manual integrity audit triggers (`fim_check`), path additions (`fim_add_path`), and real-time alteration feeds.
+4. **Data Loss Prevention (DLP) Tab:** Sensitive data pattern inspections (`dlp_scan`), exfiltration alerts (Cards/Luhn, SSN, API Keys, JWTs), and USB storage arrival detection.
+5. **OpenEDR & Host Containment Tab:** Endpoint OpenEDR driver status (`openedr_status`), live kernel telemetry streaming (`openedr_fetch_telemetry`), one-click service deployment (`install_openedr`), and emergency network containment (`isolate_host`).
+
+### 2. REST API Specification
+The Web Portal exposes secure, JWT-authenticated REST endpoints:
+- `POST /api/v1/auth/login`: Authenticates administrator with the server pre-shared key (PSK) and issues a signed HS256 JWT bearer token.
+- `GET /api/v1/agents`: Returns JSON inventory of connected sensors, hostnames, IP addresses, OS metrics, defense capabilities, and cryptographic attestation statuses.
+- `GET /api/v1/alerts`: Returns security alerts feed. Supports query parameters `?severity=CRITICAL` and `?subsystem=FIM`.
+- `POST /api/v1/commands/dispatch`: Dispatches commands directly to agents (`{"agent_id": "...", "command": "...", "args": ...}`) with timeout control and returns command output.
+- `GET /api/v1/quarantine`: Aggregates quarantined files across connected endpoint sensors.
+- `GET /api/v1/status`: Returns server health, active port bindings (C2 :443, Web :8443), and version info.
+
+### 3. WebSocket Real-Time Event Bus
+- `WS /ws/live-stream`: Duplex WebSocket streaming live security events, telemetry frames, agent connect/disconnect notifications, and attestation status updates to connected dashboards in real time.
 
 ---
 

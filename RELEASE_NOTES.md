@@ -1,5 +1,33 @@
 # Server-EDR Release Notes
 
+## Version 1.2.0 — Web Management Portal & Port 443 Alignment
+
+**Release Date:** October 2026  
+**License:** GNU General Public License v3.0  
+**Status:** Stable / Production-Ready  
+
+---
+
+### Key Features & Architectural Enhancements
+
+#### 1. Embedded HTTPS Web Portal & Headless GUI Migration
+- **Headless Architecture:** Fully removed desktop GUI dependencies (`tkinter`), enabling native headless deployments on servers, containers, and remote cloud infrastructure.
+- **Embedded Web Portal (:8443):** Embedded asynchronous HTTPS REST and WebSocket service running on port 8443 by default, sharing TLS certificate identity and pre-shared key credentials with the core C2 engine.
+- **HTML5 Single Page Application (SPA):** Modern dark-themed responsive dashboard providing all five core defense consoles:
+  - *Security Alerts Tab:* Central real-time alert feed with severity filters and agent correlation.
+  - *Malware & Quarantine Tab:* Endpoint path scanning, quarantine inventory inspection, and file restoration.
+  - *File Integrity (FIM) Tab:* Integrity baseline generation, manual scans, path additions, and diff audits.
+  - *Data Loss Prevention (DLP) Tab:* In-band data inspection (Cards/Luhn, SSN, API Keys, JWTs) and USB device logs.
+  - *OpenEDR & Host Containment Tab:* Kernel driver status, live telemetry streaming, and emergency network isolation.
+- **JWT-Authenticated REST API:** Exposes endpoints for operator authentication (`POST /api/v1/auth/login`), agent inventory (`GET /api/v1/agents`), security alerts (`GET /api/v1/alerts`), command dispatching (`POST /api/v1/commands/dispatch`), and quarantine inspection (`GET /api/v1/quarantine`).
+- **WebSocket Live-Stream (`/ws/live-stream`):** Duplex live event bus broadcasting agent connection states, attestation verdicts, security alerts, and telemetry frames in real time.
+
+#### 2. C2 Port Realignment to Standard HTTPS Port 443
+- Realigned default C2 listening and outgoing agent connection ports across the management server, Linux sensor (`agent_core.py`, systemd services, templates), and Windows sensor (`Agent-Core.ps1`, SCM service, packaging scripts) from port 4444 to port 443.
+- Avoids restrictive egress firewall blocks and mimics standard HTTPS traffic flow.
+
+---
+
 ## Version 1.1.0 — Enterprise Configuration, Automated Packaging & Endpoint Deployment
 
 **Release Date:** October 2026  

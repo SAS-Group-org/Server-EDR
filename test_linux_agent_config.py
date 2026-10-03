@@ -67,7 +67,7 @@ class TestLinuxAgentConfigLoading(unittest.TestCase):
         non_existent_file = os.path.join(self.temp_dir.name, "none.json")
         cfg = load_agent_config(config_path=non_existent_file)
         self.assertEqual(cfg["server"]["host"], "127.0.0.1")
-        self.assertEqual(cfg["server"]["port"], 4444)
+        self.assertEqual(cfg["server"]["port"], 443)
         self.assertTrue(cfg["server"]["use_tls"])
         self.assertEqual(cfg["agent"]["log_level"], "INFO")
 
@@ -158,7 +158,7 @@ class TestLinuxAgentConfigLoading(unittest.TestCase):
         os.environ["EDR_SERVER_HOST"] = "rescue.example.com"
         cfg = load_agent_config(config_path=cfg_file)
         self.assertEqual(cfg["server"]["host"], "rescue.example.com")
-        self.assertEqual(cfg["server"]["port"], 4444)
+        self.assertEqual(cfg["server"]["port"], 443)
 
     def test_save_and_reload_config(self):
         """Saving a config persists to disk with valid formatting and permissions."""

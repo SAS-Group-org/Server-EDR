@@ -177,7 +177,7 @@ def main():
         config_data = {
             "server": {
                 "host": args.server_host or "127.0.0.1",
-                "port": args.server_port or 4444,
+                "port": args.server_port or 443,
                 "use_tls": not args.no_tls,
                 "cert_fingerprint": args.cert_fingerprint or "",
                 "reconnect_interval": 5,

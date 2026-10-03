@@ -33,7 +33,7 @@ Server-EDR Linux Agent - Service Installer & Automation
 
 Options:
   -H, --server-host HOST       Server-EDR server hostname or IP address
-  -p, --server-port PORT       Server-EDR server port (default: 4444)
+  -p, --server-port PORT       Server-EDR server port (default: 443)
   -k, --psk KEY                Pre-shared authentication key (PSK)
   -f, --cert-fingerprint FP    Server TLS SHA-256 certificate fingerprint
       --use-tls                Enable TLS transport encryption (default: enabled)
@@ -49,7 +49,7 @@ Options:
   -h, --help                   Display this help message and exit
 
 Examples:
-  sudo $0 --server-host 192.168.1.50 --server-port 4444 --psk "secret-token"
+  sudo $0 --server-host 192.168.1.50 --server-port 443 --psk "secret-token"
   sudo $0 -c /path/to/agent_config.json
   sudo $0 --dry-run
 EOF
@@ -239,7 +239,7 @@ elif [[ -f "$TARGET_CONFIG" && "$FORCE" -eq 0 ]]; then
 else
     echo "[*] Generating $TARGET_CONFIG from deployment parameters..."
     HOST_VAL="${SERVER_HOST:-127.0.0.1}"
-    PORT_VAL="${SERVER_PORT:-4444}"
+    PORT_VAL="${SERVER_PORT:-443}"
     PSK_VAL="${PSK:-PASTE_PSK_HERE}"
     FINGERPRINT_VAL="${CERT_FINGERPRINT:-}"
     TLS_BOOL="true"

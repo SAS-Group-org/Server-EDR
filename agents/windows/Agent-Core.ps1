@@ -5,7 +5,7 @@
 param(
     [string]$ConfigPath      = "",
     [string]$ServerHost      = "",
-    [int]$ServerPort         = 0,
+    [int]$ServerPort         = 443,
     [string]$PSK             = "",
     [string]$CertThumbprint  = "",
     [string]$UseTLSStr       = "",
@@ -15,6 +15,10 @@ param(
     [switch]$InstallOpenEDR,
     [switch]$InstallDeps
 )
+
+if ($ServerPort -le 0) {
+    $ServerPort = if ($env:EDR_SERVER_PORT) { [int]$env:EDR_SERVER_PORT } else { 443 }
+}
 
 $PSScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ModulesDir  = Join-Path $PSScriptDir "Modules"
@@ -35,7 +39,7 @@ if ($ServerHost) {
     $config.server_host = $ServerHost
     $config.server.host = $ServerHost
 }
-if ($ServerPort -gt 0) {
+if ($PSBoundParameters.ContainsKey('ServerPort')) {
     $config.server_port = $ServerPort
     $config.server.port = $ServerPort
 }

@@ -244,7 +244,7 @@ function Load-AgentConfig {
 
     $defaultConfig = @{
         server_host        = "127.0.0.1"
-        server_port        = 4444
+        server_port        = 443
         psk                = "PASTE_PSK_HERE"
         cert_thumbprint    = ""
         use_tls            = $true

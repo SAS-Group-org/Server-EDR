@@ -79,7 +79,7 @@ if (Get-Command Load-AgentConfig -ErrorAction SilentlyContinue) {
 } else {
     $cfg = [ordered]@{
         server_host     = "127.0.0.1"
-        server_port     = 4444
+        server_port     = 443
         psk             = ""
         cert_thumbprint = ""
         use_tls         = $true
@@ -205,7 +205,13 @@ if (Get-Command Save-AgentConfig -ErrorAction SilentlyContinue) {
 try {
     [Environment]::SetEnvironmentVariable("EDR_CONFIG_FILE", $targetCfg, "Machine")
     if ($cfg.server_host) { [Environment]::SetEnvironmentVariable("EDR_SERVER_HOST", [string]$cfg.server_host, "Machine") }
-    if ($cfg.server_port) { [Environment]::SetEnvironmentVariable("EDR_SERVER_PORT", [string]$cfg.server_port, "Machine") }
+    if ($ServerPort -gt 0) {
+        [Environment]::SetEnvironmentVariable("EDR_SERVER_PORT", [string]$ServerPort, "Machine")
+    } elseif ($cfg.server_port) {
+        [Environment]::SetEnvironmentVariable("EDR_SERVER_PORT", [string]$cfg.server_port, "Machine")
+    } else {
+        [Environment]::SetEnvironmentVariable("EDR_SERVER_PORT", "443", "Machine")
+    }
     if ($cfg.psk)         { [Environment]::SetEnvironmentVariable("EDR_PSK", [string]$cfg.psk, "Machine") }
     if ($cfg.cert_thumbprint) { [Environment]::SetEnvironmentVariable("EDR_CERT_FINGERPRINT", [string]$cfg.cert_thumbprint, "Machine") }
     [Environment]::SetEnvironmentVariable("EDR_USE_TLS", $(if ($cfg.use_tls) { "1" } else { "0" }), "Machine")

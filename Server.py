@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-Secure Endpoint Detection, Response & Defense Platform — GUI Server
+Secure Endpoint Detection, Response & Defense Platform — Web Portal & Headless C2 Server
 Requires: Python 3.8+
 Optional: pip install cryptography   (for automatic TLS cert generation)
 
 Features:
+  - Dual-listener architecture: C2 Agent Engine (Port 443) and Web Portal (Port 8443)
   - TLS 1.2+ encryption with certificate pinning & rotating audit log
   - HMAC-SHA256 challenge-response pre-shared key (PSK) authentication
   - Duplex asynchronous messaging (synchronous commands + real-time alerts + telemetry)
-  - Endpoint Defense Console:
+  - Web Portal (HTTPS / REST API / WebSocket Live Stream on Port 8443)
+  - Endpoint Defense Dashboard (SPA):
       * Security Alerts Tab (Unified real-time feed for FIM, DLP, Malware, and OpenEDR)
       * Malware Prevention & Quarantine Tab (Remote scans, quarantine vault manager)
       * File Integrity Monitoring (FIM) Tab (Baselines, real-time change detection)
@@ -17,14 +19,13 @@ Features:
 """
 from __future__ import annotations
 
-import argparse, base64, collections, hashlib, hmac as _hmac, json, logging, os, queue, re
+import argparse, asyncio, base64, collections, hashlib, hmac as _hmac, json, logging, os, queue, re
 import secrets, socket, ssl, stat, struct, sys, threading, time, uuid
-import tkinter as tk
-from tkinter import ttk, scrolledtext, filedialog, messagebox
 from datetime import datetime, timezone
 from ipaddress import ip_address, ip_network, IPv4Network
 from logging.handlers import RotatingFileHandler
-from typing import Callable, Dict, List, Optional, Tuple, Any
+from typing import Callable, Dict, List, Optional, Tuple, Any, Set
+from aiohttp import web, WSMsgType
 
 try:
     from agents.linux.package_linux_agent import build_linux_package
@@ -38,9 +39,9 @@ except ImportError:
 
 # ─────────────────────────────────────────────────────────────
 DEFAULT_HOST            = "0.0.0.0"
-DEFAULT_PORT            = 4444
-DEFAULT_CONFIG_FILE     = "server_config.json"
-DEFAULT_ENROLLMENT_FILE = "edr_enrollment.json"
+DEFAULT_C2_PORT         = 443       # Migrated from 4444
+DEFAULT_PORT            = DEFAULT_C2_PORT
+DEFAULT_WEB_PORT        = 8443      # Web Portal binding port
 MAX_MSG_BYTES           = 50 * 1024 * 1024   # 50 MB hard cap — prevents memory DoS
 AUTH_TIMEOUT_SECS       = 15                  # seconds to complete TLS + HMAC handshake
 CERT_FILE               = "edr_server.crt" if os.path.exists("edr_server.crt") or not os.path.exists("rat_server.crt") else "rat_server.crt"
@@ -48,6 +49,8 @@ KEY_FILE                = "edr_server.key" if os.path.exists("edr_server.key") o
 PSK_FILE                = "edr_psk.txt" if os.path.exists("edr_psk.txt") or not os.path.exists("rat_psk.txt") else "rat_psk.txt"
 FPRINT_FILE             = "edr_fingerprint.txt" if os.path.exists("edr_fingerprint.txt") or not os.path.exists("rat_fingerprint.txt") else "rat_fingerprint.txt"
 LOG_FILE                = "edr_audit.log"
+DEFAULT_CONFIG_FILE     = "server_config.json"
+DEFAULT_ENROLLMENT_FILE = "enrollment_credentials.json"
 
 C = {
     "base":    "#1e1e2e", "mantle":  "#181825", "crust":   "#11111b",
@@ -59,32 +62,7 @@ C = {
     "sky":     "#89dceb",
 }
 
-
-# ════════════════════════════════════════════════════════════════
-#  Font detection
-# ════════════════════════════════════════════════════════════════
-
-def _pick_mono() -> str:
-    try:
-        import tkinter.font as tkfont
-        import tkinter as _tk
-        _r = _tk.Tk(); _r.withdraw()
-        available = set(tkfont.families())
-        _r.destroy()
-    except Exception:
-        available = set()
-    for candidate in (
-        "Courier New", "DejaVu Sans Mono", "Liberation Mono",
-        "Hack", "Fira Mono", "Cascadia Mono", "JetBrains Mono",
-        "Source Code Pro", "Roboto Mono", "Courier 10 Pitch",
-        "Courier", "Monospace", "fixed",
-    ):
-        if candidate in available:
-            return candidate
-    return "TkFixedFont"
-
-
-MONO = _pick_mono()
+MONO = "Courier New"
 
 
 # ════════════════════════════════════════════════════════════════
@@ -363,12 +341,14 @@ def generate_enrollment_credentials(
     psk: str,
     cert_fingerprint: str = "",
     use_tls: bool = True,
-    reconnect_secs: int = 5
+    reconnect_secs: int = 5,
+    web_port: int = DEFAULT_WEB_PORT,
 ) -> Dict[str, Any]:
     """Generates enrollment credentials for secure server-client communication."""
     return {
         "server_host": server_host,
         "server_port": int(server_port),
+        "web_port": int(web_port),
         "psk": psk,
         "cert_fingerprint": cert_fingerprint,
         "use_tls": bool(use_tls),
@@ -428,6 +408,7 @@ class ServerConfig:
         self,
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
+        web_port: int = DEFAULT_WEB_PORT,
         psk: str = "",
         use_tls: bool = True,
         cert_file: str = CERT_FILE,
@@ -443,6 +424,7 @@ class ServerConfig:
     ):
         self.host = host
         self.port = int(port)
+        self.web_port = int(web_port)
         self.psk = psk
         self.use_tls = bool(use_tls)
         self.cert_file = cert_file
@@ -455,7 +437,7 @@ class ServerConfig:
         self.created_at = created_at or datetime.now(timezone.utc).isoformat()
         self.updated_at = updated_at or datetime.now(timezone.utc).isoformat()
         self.enrollment_credentials = enrollment_credentials or generate_enrollment_credentials(
-            self.host, self.port, self.psk, self.cert_fingerprint, self.use_tls
+            self.host, self.port, self.psk, self.cert_fingerprint, self.use_tls, web_port=self.web_port
         )
 
     def validate(self) -> None:
@@ -463,6 +445,8 @@ class ServerConfig:
             raise ValueError(f"Invalid server host: {self.host}")
         if not (1 <= self.port <= 65535):
             raise ValueError(f"Invalid server port (must be 1-65535): {self.port}")
+        if not (1 <= self.web_port <= 65535):
+            raise ValueError(f"Invalid server web_port (must be 1-65535): {self.web_port}")
         if not self.psk:
             raise ValueError("Pre-shared key (PSK) cannot be empty")
         if self.allow_cidrs:
@@ -479,6 +463,7 @@ class ServerConfig:
         return {
             "server_host": self.host,
             "server_port": self.port,
+            "web_port": self.web_port,
             "psk": self.psk,
             "use_tls": self.use_tls,
             "cert_file": self.cert_file,
@@ -497,6 +482,7 @@ class ServerConfig:
         cfg = cls(
             host=data.get("server_host", data.get("host", DEFAULT_HOST)),
             port=data.get("server_port", data.get("port", DEFAULT_PORT)),
+            web_port=data.get("web_port", DEFAULT_WEB_PORT),
             psk=data.get("psk", ""),
             use_tls=data.get("use_tls", True),
             cert_file=data.get("cert_file", CERT_FILE),
@@ -518,7 +504,7 @@ class ServerConfig:
 
     def to_enrollment_credentials(self) -> Dict[str, Any]:
         return generate_enrollment_credentials(
-            self.host, self.port, self.psk, self.cert_fingerprint, self.use_tls
+            self.host, self.port, self.psk, self.cert_fingerprint, self.use_tls, web_port=self.web_port
         )
 
 
@@ -530,7 +516,7 @@ def save_server_config(config: ServerConfig, config_path: Optional[str] = None) 
     config.enrollment_credentials = config.to_enrollment_credentials()
     data = config.to_dict()
     secure_write_file(path, json.dumps(data, indent=2))
-    AUDIT.info("CONFIG_SAVED  path=%s  host=%s  port=%d", path, config.host, config.port)
+    AUDIT.info("CONFIG_SAVED  path=%s  host=%s  port=%d  web_port=%d", path, config.host, config.port, config.web_port)
     return path
 
 
@@ -566,6 +552,7 @@ def reload_server_config(
     if current_config is not None:
         current_config.host = new_cfg.host
         current_config.port = new_cfg.port
+        current_config.web_port = new_cfg.web_port
         current_config.psk = new_cfg.psk
         current_config.use_tls = new_cfg.use_tls
         current_config.cert_file = new_cfg.cert_file
@@ -574,8 +561,8 @@ def reload_server_config(
         current_config.allow_cidrs = new_cfg.allow_cidrs
         current_config.enrollment_credentials = new_cfg.enrollment_credentials
         current_config.updated_at = new_cfg.updated_at
-    AUDIT.info("CONFIG_RELOAD  path=%s  host=%s  port=%d  tls=%s",
-               config_path, new_cfg.host, new_cfg.port, new_cfg.use_tls)
+    AUDIT.info("CONFIG_RELOAD  path=%s  host=%s  port=%d  web_port=%d  tls=%s",
+               config_path, new_cfg.host, new_cfg.port, new_cfg.web_port, new_cfg.use_tls)
     return new_cfg
 
 
@@ -583,352 +570,8 @@ def reload_server_config(
 #  First-Run Configuration Wizard & GUI Dialogs
 # ════════════════════════════════════════════════════════════════
 
-class ConfigWizardDialog(tk.Toplevel):
-    """First-Run Server Configuration Wizard Dialog."""
-    def __init__(
-        self,
-        parent: tk.Tk | tk.Toplevel,
-        config_path: str = DEFAULT_CONFIG_FILE,
-        host: str = DEFAULT_HOST,
-        port: int = DEFAULT_PORT,
-        psk: Optional[str] = None,
-        use_tls: bool = True,
-        cert_file: str = CERT_FILE,
-        key_file: str = KEY_FILE,
-        allow_cidrs: Optional[List[str]] = None,
-    ):
-        super().__init__(parent)
-        self.title("Server-EDR // First-Run Configuration Wizard")
-        self.geometry("620x600")
-        self.minsize(580, 540)
-        self.configure(bg=C["base"])
-        self.transient(parent)
-        self.grab_set()
-
-        self.config_path = config_path
-        self.result_config: Optional[ServerConfig] = None
-
-        self._host_var = tk.StringVar(value=host)
-        self._port_var = tk.StringVar(value=str(port))
-        self._tls_var = tk.BooleanVar(value=use_tls)
-        self._cert_var = tk.StringVar(value=cert_file)
-        self._key_var = tk.StringVar(value=key_file)
-        self._psk_var = tk.StringVar(value=psk or secrets.token_hex(32))
-        self._cidrs_var = tk.StringVar(value=", ".join(allow_cidrs or []))
-        self._restrict_perms_var = tk.BooleanVar(value=True)
-
-        self._build_ui()
-
-    def _build_ui(self):
-        # Header
-        hdr = tk.Frame(self, bg=C["crust"], height=64)
-        hdr.pack(fill="x", side="top")
-        hdr.pack_propagate(False)
-        tk.Label(hdr, text="🛡️  SERVER-EDR INITIAL CONFIGURATION WIZARD",
-                 bg=C["crust"], fg=C["blue"], font=(MONO, 12, "bold")).pack(anchor="w", padx=16, pady=(10, 2))
-        tk.Label(hdr, text="First-run setup: configure listening endpoint, TLS identity, and client enrollment credentials.",
-                 bg=C["crust"], fg=C["subtext"], font=(MONO, 8)).pack(anchor="w", padx=16)
-
-        # Body
-        body = tk.Frame(self, bg=C["base"], padx=18, pady=12)
-        body.pack(fill="both", expand=True)
-
-        def make_section(title: str):
-            f = tk.Frame(body, bg=C["base"])
-            f.pack(fill="x", pady=(8, 4))
-            tk.Label(f, text=title, bg=C["base"], fg=C["mauve"], font=(MONO, 9, "bold")).pack(anchor="w")
-            tk.Frame(f, bg=C["surface0"], height=1).pack(fill="x", pady=2)
-            return f
-
-        # Network section
-        make_section("1. Network & Listening Endpoint")
-        grid1 = tk.Frame(body, bg=C["base"])
-        grid1.pack(fill="x", pady=2)
-        tk.Label(grid1, text="Bind Address:", bg=C["base"], fg=C["text"], font=(MONO, 9)).grid(row=0, column=0, sticky="w", pady=3)
-        ttk.Entry(grid1, textvariable=self._host_var, width=20).grid(row=0, column=1, sticky="w", padx=8, pady=3)
-        tk.Label(grid1, text="TCP Port:", bg=C["base"], fg=C["text"], font=(MONO, 9)).grid(row=0, column=2, sticky="w", padx=(12, 0), pady=3)
-        ttk.Entry(grid1, textvariable=self._port_var, width=10).grid(row=0, column=3, sticky="w", padx=8, pady=3)
-
-        tk.Label(grid1, text="Allowed CIDRs:", bg=C["base"], fg=C["text"], font=(MONO, 9)).grid(row=1, column=0, sticky="w", pady=3)
-        ttk.Entry(grid1, textvariable=self._cidrs_var, width=38).grid(row=1, column=1, columnspan=3, sticky="we", padx=8, pady=3)
-
-        # TLS Identity section
-        make_section("2. TLS Transport Identity")
-        grid2 = tk.Frame(body, bg=C["base"])
-        grid2.pack(fill="x", pady=2)
-        tk.Checkbutton(grid2, text="Enable TLS 1.2+ Transport Encryption", variable=self._tls_var,
-                       bg=C["base"], fg=C["green"], selectcolor=C["surface0"], activebackground=C["base"],
-                       activeforeground=C["green"], font=(MONO, 9, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
-
-        tk.Label(grid2, text="Certificate File:", bg=C["base"], fg=C["text"], font=(MONO, 9)).grid(row=1, column=0, sticky="w", pady=2)
-        ttk.Entry(grid2, textvariable=self._cert_var, width=32).grid(row=1, column=1, sticky="w", padx=8, pady=2)
-
-        tk.Label(grid2, text="Private Key File:", bg=C["base"], fg=C["text"], font=(MONO, 9)).grid(row=2, column=0, sticky="w", pady=2)
-        ttk.Entry(grid2, textvariable=self._key_var, width=32).grid(row=2, column=1, sticky="w", padx=8, pady=2)
-
-        # Authentication & Enrollment
-        make_section("3. Sensor Authentication & Enrollment")
-        grid3 = tk.Frame(body, bg=C["base"])
-        grid3.pack(fill="x", pady=2)
-        tk.Label(grid3, text="Pre-Shared Key (PSK):", bg=C["base"], fg=C["text"], font=(MONO, 9)).grid(row=0, column=0, sticky="w", pady=2)
-        ttk.Entry(grid3, textvariable=self._psk_var, width=36).grid(row=0, column=1, sticky="w", padx=8, pady=2)
-        ttk.Button(grid3, text="🔄 Generate", command=lambda: self._psk_var.set(secrets.token_hex(32))).grid(row=0, column=2, sticky="w", pady=2)
-
-        # Hardening Notice
-        make_section("4. Security Persistence & Permissions")
-        sec_f = tk.Frame(body, bg=C["surface0"], padx=10, pady=8)
-        sec_f.pack(fill="x", pady=4)
-        tk.Checkbutton(sec_f, text="🔒 Enforce Restrictive Permissions (0600 / restricted ACLs)", variable=self._restrict_perms_var,
-                       bg=C["surface0"], fg=C["text"], selectcolor=C["base"], activebackground=C["surface0"],
-                       activeforeground=C["text"], font=(MONO, 9)).pack(anchor="w")
-        tk.Label(sec_f, text="Configuration, private key, and PSK will be saved with owner-only access to prevent unauthorized credential access.",
-                 bg=C["surface0"], fg=C["subtext"], font=(MONO, 8), wraplength=520, justify="left").pack(anchor="w", pady=(2, 0))
-
-        # Bottom buttons
-        btn_bar = tk.Frame(self, bg=C["crust"], height=48, padx=16)
-        btn_bar.pack(fill="x", side="bottom")
-        btn_bar.pack_propagate(False)
-
-        ttk.Button(btn_bar, text="Save & Start Server", style="Success.TButton", command=self._on_save).pack(side="right", padx=6, pady=8)
-        ttk.Button(btn_bar, text="Cancel", style="Danger.TButton", command=self.destroy).pack(side="right", padx=6, pady=8)
-
-    def _on_save(self):
-        host = self._host_var.get().strip() or DEFAULT_HOST
-        port_str = self._port_var.get().strip()
-        psk = self._psk_var.get().strip()
-        use_tls = self._tls_var.get()
-        cert_file = self._cert_var.get().strip() or CERT_FILE
-        key_file = self._key_var.get().strip() or KEY_FILE
-        cidrs_raw = self._cidrs_var.get().strip()
-
-        try:
-            port = int(port_str)
-            if not (1 <= port <= 65535):
-                raise ValueError()
-        except Exception:
-            messagebox.showerror("Invalid Port", "Port must be an integer between 1 and 65535.")
-            return
-
-        if not psk:
-            messagebox.showerror("Invalid PSK", "Pre-shared key (PSK) cannot be empty.")
-            return
-
-        allow_cidrs = []
-        if cidrs_raw:
-            for c in [x.strip() for x in cidrs_raw.split(",") if x.strip()]:
-                try:
-                    ip_network(c, strict=False)
-                    allow_cidrs.append(c)
-                except ValueError as e:
-                    messagebox.showerror("Invalid CIDR", f"Invalid CIDR '{c}': {e}")
-                    return
-
-        fingerprint = ""
-        if use_tls:
-            try:
-                _, _, fingerprint = generate_tls_identity(cert_file, key_file)
-            except Exception as e:
-                messagebox.showerror("TLS Error", f"Failed generating TLS certificate and key: {e}")
-                return
-
-        # Save PSK and fingerprint files
-        secure_write_file(PSK_FILE, psk)
-        if fingerprint:
-            secure_write_file(FPRINT_FILE, fingerprint)
-
-        enrollment = generate_enrollment_credentials(
-            host, port, psk, fingerprint, use_tls
-        )
-        export_enrollment_credentials(enrollment, DEFAULT_ENROLLMENT_FILE)
-
-        config = ServerConfig(
-            host=host,
-            port=port,
-            psk=psk,
-            use_tls=use_tls,
-            cert_file=cert_file,
-            key_file=key_file,
-            cert_fingerprint=fingerprint,
-            allow_cidrs=allow_cidrs,
-            enrollment_credentials=enrollment,
-            config_path=self.config_path,
-        )
-        save_server_config(config, self.config_path)
-        self.result_config = config
-        self.destroy()
-
-
-class ServerConfigDialog(tk.Toplevel):
-    """Runtime Configuration Viewer & Reload Dialog."""
-    def __init__(
-        self,
-        parent: tk.Tk | tk.Toplevel,
-        config: Optional[ServerConfig],
-        on_reload: Optional[Callable] = None,
-    ):
-        super().__init__(parent)
-        self.title("Server-EDR // Active Server Configuration")
-        self.geometry("600x520")
-        self.minsize(540, 460)
-        self.configure(bg=C["base"])
-        self.transient(parent)
-        self.grab_set()
-
-        self.config = config
-        self.on_reload = on_reload
-        self._psk_revealed = False
-
-        self._build_ui()
-
-    def _build_ui(self):
-        # Header
-        hdr = tk.Frame(self, bg=C["crust"], height=50)
-        hdr.pack(fill="x", side="top")
-        hdr.pack_propagate(False)
-        tk.Label(hdr, text="⚙️  ACTIVE SERVER CONFIGURATION",
-                 bg=C["crust"], fg=C["blue"], font=(MONO, 11, "bold")).pack(side="left", padx=16, pady=12)
-
-        body = tk.Frame(self, bg=C["base"], padx=18, pady=12)
-        body.pack(fill="both", expand=True)
-
-        if not self.config:
-            tk.Label(body, text="No active configuration file loaded.", bg=C["base"], fg=C["peach"], font=(MONO, 10)).pack(pady=20)
-            return
-
-        cfg = self.config
-        rows = [
-            ("Config File:", cfg.config_path),
-            ("Listen Host:", cfg.host),
-            ("Listen Port:", str(cfg.port)),
-            ("TLS Transport:", "Enabled (TLS 1.2+)" if cfg.use_tls else "Disabled (Plaintext)"),
-            ("Cert File:", cfg.cert_file),
-            ("Key File:", cfg.key_file),
-            ("Cert Fingerprint:", cfg.cert_fingerprint or "N/A"),
-            ("Allow CIDRs:", ", ".join(cfg.allow_cidrs) if cfg.allow_cidrs else "Any (0.0.0.0/0)"),
-            ("Last Updated:", cfg.updated_at),
-        ]
-
-        for i, (k, v) in enumerate(rows):
-            tk.Label(body, text=k, bg=C["base"], fg=C["subtext"], font=(MONO, 9, "bold")).grid(row=i, column=0, sticky="w", pady=3)
-            tk.Label(body, text=v, bg=C["base"], fg=C["text"], font=(MONO, 9)).grid(row=i, column=1, sticky="w", padx=10, pady=3)
-
-        # PSK row with reveal toggle
-        r_psk = len(rows)
-        tk.Label(body, text="Pre-Shared Key:", bg=C["base"], fg=C["subtext"], font=(MONO, 9, "bold")).grid(row=r_psk, column=0, sticky="w", pady=3)
-        self._lbl_psk = tk.Label(body, text=mask_credential(cfg.psk), bg=C["base"], fg=C["yellow"], font=(MONO, 9))
-        self._lbl_psk.grid(row=r_psk, column=1, sticky="w", padx=10, pady=3)
-        ttk.Button(body, text="👁 Toggle", command=self._toggle_psk).grid(row=r_psk, column=2, sticky="w", pady=3)
-
-        # Buttons
-        btn_bar = tk.Frame(self, bg=C["crust"], height=48, padx=16)
-        btn_bar.pack(fill="x", side="bottom")
-        btn_bar.pack_propagate(False)
-
-        ttk.Button(btn_bar, text="Close", command=self.destroy).pack(side="right", padx=6, pady=8)
-        if self.on_reload:
-            ttk.Button(btn_bar, text="🔄 Reload from Disk", command=self._do_reload).pack(side="left", padx=6, pady=8)
-        ttk.Button(btn_bar, text="📦 Build Package", command=self._open_package_builder).pack(side="left", padx=6, pady=8)
-
-    def _open_package_builder(self):
-        creds = self.config.to_enrollment_credentials() if self.config else {}
-        AgentPackageBuilderDialog(self.master, credentials=creds, config=self.config)
-
-    def _toggle_psk(self):
-        if not self.config: return
-        self._psk_revealed = not self._psk_revealed
-        self._lbl_psk.config(text=self.config.psk if self._psk_revealed else mask_credential(self.config.psk))
-
-    def _do_reload(self):
-        if self.on_reload:
-            self.on_reload()
-            self.destroy()
-
-
-class EnrollmentCredentialsDialog(tk.Toplevel):
-    """Enrollment Credentials Display and Export Modal."""
-    def __init__(
-        self,
-        parent: tk.Tk | tk.Toplevel,
-        credentials: Dict[str, Any]
-    ):
-        super().__init__(parent)
-        self.title("Server-EDR // Client Enrollment Credentials")
-        self.geometry("640x480")
-        self.minsize(580, 420)
-        self.configure(bg=C["base"])
-        self.transient(parent)
-        self.grab_set()
-
-        self.credentials = credentials
-        self._build_ui()
-
-    def _build_ui(self):
-        hdr = tk.Frame(self, bg=C["crust"], height=50)
-        hdr.pack(fill="x", side="top")
-        hdr.pack_propagate(False)
-        tk.Label(hdr, text="🔑  CLIENT ENROLLMENT CREDENTIALS",
-                 bg=C["crust"], fg=C["blue"], font=(MONO, 11, "bold")).pack(side="left", padx=16, pady=12)
-
-        body = tk.Frame(self, bg=C["base"], padx=18, pady=12)
-        body.pack(fill="both", expand=True)
-
-        tk.Label(body, text="Configure these credentials into endpoint defense agents or export agent packages:",
-                 bg=C["base"], fg=C["subtext"], font=(MONO, 8)).pack(anchor="w", pady=(0, 10))
-
-        c = self.credentials
-        rows = [
-            ("Server Endpoint:", f"{c.get('server_host')}:{c.get('server_port')}"),
-            ("TLS Fingerprint:", c.get("cert_fingerprint", "N/A")),
-            ("PSK (Hex Token):", c.get("psk", "")),
-            ("TLS Required:", "Yes" if c.get("use_tls") else "No"),
-            ("Reconnect Interval:", f"{c.get('reconnect_secs', 5)}s"),
-        ]
-
-        for k, v in rows:
-            f = tk.Frame(body, bg=C["base"])
-            f.pack(fill="x", pady=4)
-            tk.Label(f, text=f"{k:<20}", bg=C["base"], fg=C["blue"], font=(MONO, 9, "bold")).pack(side="left")
-            val_ent = ttk.Entry(f, width=42)
-            val_ent.insert(0, str(v))
-            val_ent.configure(state="readonly")
-            val_ent.pack(side="left", padx=8)
-
-        # Export Buttons
-        btn_bar = tk.Frame(self, bg=C["crust"], height=48, padx=16)
-        btn_bar.pack(fill="x", side="bottom")
-        btn_bar.pack_propagate(False)
-
-        ttk.Button(btn_bar, text="Close", command=self.destroy).pack(side="right", padx=6, pady=8)
-        ttk.Button(btn_bar, text="Export edr_enrollment.json", command=self._export_enrollment).pack(side="left", padx=6, pady=8)
-        ttk.Button(btn_bar, text="Export agent_config.json", command=self._export_agent_config).pack(side="left", padx=6, pady=8)
-        ttk.Button(btn_bar, text="📦 Build Package", command=self._open_package_builder).pack(side="left", padx=6, pady=8)
-
-    def _open_package_builder(self):
-        AgentPackageBuilderDialog(self.master, credentials=self.credentials)
-
-    def _export_enrollment(self):
-        fpath = filedialog.asksaveasfilename(
-            defaultextension=".json",
-            initialfile="edr_enrollment.json",
-            filetypes=[("JSON files", "*.json"), ("All Files", "*.*")]
-        )
-        if fpath:
-            export_enrollment_credentials(self.credentials, fpath)
-            messagebox.showinfo("Export Successful", f"Saved enrollment credentials to:\n{fpath}")
-
-    def _export_agent_config(self):
-        fpath = filedialog.asksaveasfilename(
-            defaultextension=".json",
-            initialfile="agent_config.json",
-            filetypes=[("JSON files", "*.json"), ("All Files", "*.*")]
-        )
-        if fpath:
-            generate_agent_config(self.credentials, output_path=fpath)
-            messagebox.showinfo("Export Successful", f"Saved agent config to:\n{fpath}")
-
-
 # ════════════════════════════════════════════════════════════════
-#  Agent Package Builder (GUI & Programmatic Backend)
+#  Agent Package Builder (Programmatic Backend)
 # ════════════════════════════════════════════════════════════════
 
 def build_agent_package(
@@ -1032,258 +675,9 @@ def build_agent_package(
     return res_path
 
 
-class AgentPackageBuilderDialog(tk.Toplevel):
-    """GUI Agent Package Builder Dialog for Linux (.tar.gz) and Windows (.zip)."""
-    def __init__(
-        self,
-        parent: tk.Tk | tk.Toplevel,
-        credentials: Optional[Dict[str, Any]] = None,
-        config: Optional[ServerConfig] = None,
-    ):
-        super().__init__(parent)
-        self.title("Server-EDR // GUI Agent Package Builder")
-        self.geometry("640x660")
-        self.minsize(600, 600)
-        self.configure(bg=C["base"])
-        self.transient(parent)
-        self.grab_set()
-
-        self.credentials = credentials or {}
-        self.config = config
-        self._target_os_var = tk.StringVar(value="linux")
-        self._use_tls_var = tk.BooleanVar(value=self.credentials.get("use_tls", True))
-
-        self._build_ui()
-
-    def _build_ui(self):
-        # Header
-        hdr = tk.Frame(self, bg=C["crust"], height=52)
-        hdr.pack(fill="x", side="top")
-        hdr.pack_propagate(False)
-        tk.Label(hdr, text="📦  GUI AGENT PACKAGE BUILDER",
-                 bg=C["crust"], fg=C["blue"], font=(MONO, 12, "bold")).pack(side="left", padx=16, pady=12)
-
-        # Body container
-        body = tk.Frame(self, bg=C["base"], padx=20, pady=12)
-        body.pack(fill="both", expand=True)
-
-        # 1. Target OS selector
-        os_frame = tk.LabelFrame(body, text=" 1. Target Operating System & Format ",
-                                 bg=C["base"], fg=C["blue"], font=(MONO, 9, "bold"), padx=12, pady=8)
-        os_frame.pack(fill="x", pady=(0, 10))
-
-        rb_linux = tk.Radiobutton(os_frame, text="Linux Sensor (.tar.gz)", value="linux",
-                                  variable=self._target_os_var, command=self._on_os_change,
-                                  bg=C["base"], fg=C["text"], selectcolor=C["surface0"],
-                                  activebackground=C["base"], activeforeground=C["lavender"], font=(MONO, 9))
-        rb_linux.pack(side="left", padx=(10, 20))
-
-        rb_win = tk.Radiobutton(os_frame, text="Windows Sensor (.zip)", value="windows",
-                                variable=self._target_os_var, command=self._on_os_change,
-                                bg=C["base"], fg=C["text"], selectcolor=C["surface0"],
-                                activebackground=C["base"], activeforeground=C["lavender"], font=(MONO, 9))
-        rb_win.pack(side="left", padx=10)
-
-        # 2. Server Endpoint & Authentication
-        net_frame = tk.LabelFrame(body, text=" 2. Endpoint & Authentication Settings ",
-                                  bg=C["base"], fg=C["blue"], font=(MONO, 9, "bold"), padx=12, pady=8)
-        net_frame.pack(fill="x", pady=(0, 10))
-
-        # Host & Port
-        f_ep = tk.Frame(net_frame, bg=C["base"])
-        f_ep.pack(fill="x", pady=2)
-        tk.Label(f_ep, text="Server Host:", width=14, anchor="w", bg=C["base"], fg=C["subtext"], font=(MONO, 9)).pack(side="left")
-        self._ent_host = ttk.Entry(f_ep, width=24)
-        self._ent_host.insert(0, str(self.credentials.get("server_host", "127.0.0.1")))
-        self._ent_host.pack(side="left", padx=(0, 12))
-
-        tk.Label(f_ep, text="Port:", width=6, anchor="w", bg=C["base"], fg=C["subtext"], font=(MONO, 9)).pack(side="left")
-        self._ent_port = ttk.Entry(f_ep, width=10)
-        self._ent_port.insert(0, str(self.credentials.get("server_port", 4444)))
-        self._ent_port.pack(side="left")
-
-        # PSK
-        f_psk = tk.Frame(net_frame, bg=C["base"])
-        f_psk.pack(fill="x", pady=4)
-        tk.Label(f_psk, text="Pre-Shared Key:", width=14, anchor="w", bg=C["base"], fg=C["subtext"], font=(MONO, 9)).pack(side="left")
-        self._ent_psk = ttk.Entry(f_psk, width=36)
-        self._ent_psk.insert(0, str(self.credentials.get("psk", "")))
-        self._ent_psk.pack(side="left", padx=(0, 8))
-        ttk.Button(f_psk, text="🎲 New PSK", command=self._gen_psk).pack(side="left")
-
-        # TLS & Fingerprint
-        f_tls = tk.Frame(net_frame, bg=C["base"])
-        f_tls.pack(fill="x", pady=2)
-        tk.Checkbutton(f_tls, text="Require TLS Encryption", variable=self._use_tls_var,
-                       bg=C["base"], fg=C["text"], selectcolor=C["surface0"],
-                       activebackground=C["base"], font=(MONO, 9)).pack(side="left")
-
-        f_fp = tk.Frame(net_frame, bg=C["base"])
-        f_fp.pack(fill="x", pady=2)
-        tk.Label(f_fp, text="TLS Fingerprint:", width=14, anchor="w", bg=C["base"], fg=C["subtext"], font=(MONO, 9)).pack(side="left")
-        self._ent_fp = ttk.Entry(f_fp, width=46)
-        self._ent_fp.insert(0, str(self.credentials.get("cert_fingerprint", "")))
-        self._ent_fp.pack(side="left")
-
-        # 3. Overrides (Sub-Issue #19)
-        ovr_frame = tk.LabelFrame(body, text=" 3. Deployment Overrides (Group Tag & Polling) ",
-                                  bg=C["base"], fg=C["blue"], font=(MONO, 9, "bold"), padx=12, pady=8)
-        ovr_frame.pack(fill="x", pady=(0, 10))
-
-        f_ovr = tk.Frame(ovr_frame, bg=C["base"])
-        f_ovr.pack(fill="x", pady=2)
-        tk.Label(f_ovr, text="Group Tag:", width=14, anchor="w", bg=C["base"], fg=C["subtext"], font=(MONO, 9)).pack(side="left")
-        self._ent_group = ttk.Entry(f_ovr, width=20)
-        self._ent_group.insert(0, "default-fleet")
-        self._ent_group.pack(side="left", padx=(0, 12))
-
-        tk.Label(f_ovr, text="Polling Interval (s):", anchor="w", bg=C["base"], fg=C["subtext"], font=(MONO, 9)).pack(side="left")
-        self._ent_poll = ttk.Entry(f_ovr, width=8)
-        self._ent_poll.insert(0, "10")
-        self._ent_poll.pack(side="left", padx=4)
-
-        # 4. Destination File
-        out_frame = tk.LabelFrame(body, text=" 4. Output Package File ",
-                                  bg=C["base"], fg=C["blue"], font=(MONO, 9, "bold"), padx=12, pady=8)
-        out_frame.pack(fill="x", pady=(0, 10))
-
-        f_out = tk.Frame(out_frame, bg=C["base"])
-        f_out.pack(fill="x", pady=2)
-        self._ent_out = ttk.Entry(f_out, width=48)
-        self._ent_out.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ttk.Button(f_out, text="Browse...", command=self._browse_output).pack(side="right")
-
-        self._update_default_output()
-
-        # Build Status / Log Area
-        self._lbl_status = tk.Label(body, text="Select configuration and click 'Build Package' to generate deployable archive.",
-                                    bg=C["base"], fg=C["overlay0"], font=(MONO, 8), wraplength=580, justify="left")
-        self._lbl_status.pack(fill="x", pady=(4, 0))
-
-        # Buttons
-        btn_bar = tk.Frame(self, bg=C["crust"], height=50, padx=16)
-        btn_bar.pack(fill="x", side="bottom")
-        btn_bar.pack_propagate(False)
-
-        ttk.Button(btn_bar, text="Cancel", command=self.destroy).pack(side="right", padx=6, pady=10)
-        ttk.Button(btn_bar, text="🔨 Build Package", style="Accent.TButton",
-                   command=self._do_build).pack(side="right", padx=6, pady=10)
-
-    def _on_os_change(self):
-        self._update_default_output()
-
-    def _update_default_output(self):
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        dist_dir = os.path.join(base_dir, "dist")
-        os.makedirs(dist_dir, exist_ok=True)
-        os_choice = self._target_os_var.get()
-        if os_choice == "linux":
-            default_path = os.path.join(dist_dir, "server-edr-agent-linux.tar.gz")
-        else:
-            default_path = os.path.join(dist_dir, "Server-EDR-Agent-Windows-v1.0.0.zip")
-        self._ent_out.delete(0, "end")
-        self._ent_out.insert(0, default_path)
-
-    def _gen_psk(self):
-        new_token = secrets.token_hex(24)
-        self._ent_psk.delete(0, "end")
-        self._ent_psk.insert(0, new_token)
-
-    def _browse_output(self):
-        os_choice = self._target_os_var.get()
-        if os_choice == "linux":
-            filetypes = [("Tar GZip archives", "*.tar.gz"), ("All Files", "*.*")]
-            defext = ".tar.gz"
-            initialfile = "server-edr-agent-linux.tar.gz"
-        else:
-            filetypes = [("Zip archives", "*.zip"), ("All Files", "*.*")]
-            defext = ".zip"
-            initialfile = "Server-EDR-Agent-Windows-v1.0.0.zip"
-
-        fpath = filedialog.asksaveasfilename(
-            defaultextension=defext,
-            initialfile=initialfile,
-            filetypes=filetypes
-        )
-        if fpath:
-            self._ent_out.delete(0, "end")
-            self._ent_out.insert(0, fpath)
-
-    def _do_build(self):
-        os_type = self._target_os_var.get()
-        host = self._ent_host.get().strip()
-        port_str = self._ent_port.get().strip()
-        psk = self._ent_psk.get().strip()
-        fp = self._ent_fp.get().strip()
-        use_tls = self._use_tls_var.get()
-        group_tag = self._ent_group.get().strip()
-        poll_str = self._ent_poll.get().strip()
-        out_path = self._ent_out.get().strip()
-
-        if not host:
-            messagebox.showerror("Validation Error", "Server Host cannot be empty.")
-            return
-
-        try:
-            port = int(port_str)
-            if not (1 <= port <= 65535):
-                raise ValueError()
-        except ValueError:
-            messagebox.showerror("Validation Error", "Port must be an integer between 1 and 65535.")
-            return
-
-        try:
-            polling_interval = int(poll_str)
-            if polling_interval <= 0:
-                raise ValueError()
-        except ValueError:
-            messagebox.showerror("Validation Error", "Polling interval must be a positive integer.")
-            return
-
-        if not out_path:
-            messagebox.showerror("Validation Error", "Output path cannot be empty.")
-            return
-
-        self._lbl_status.config(text=f"Building {os_type.capitalize()} package... Please wait.", fg=C["yellow"])
-        self.update_idletasks()
-
-        try:
-            res_path = build_agent_package(
-                os_type=os_type,
-                output_path=out_path,
-                server_host=host,
-                server_port=port,
-                psk=psk,
-                cert_fingerprint=fp,
-                use_tls=use_tls,
-                polling_interval=polling_interval,
-                group_tag=group_tag,
-                config=self.config
-            )
-            size_kb = os.path.getsize(res_path) / 1024
-            with open(res_path, "rb") as f:
-                sha256 = hashlib.sha256(f.read()).hexdigest()
-
-            msg = (
-                f"✓ Package Created Successfully!\n\n"
-                f"Platform: {os_type.capitalize()}\n"
-                f"File: {res_path}\n"
-                f"Size: {size_kb:.1f} KB\n"
-                f"Group Tag: {group_tag}\n"
-                f"Endpoint: {host}:{port}\n"
-                f"SHA256: {sha256}"
-            )
-            self._lbl_status.config(text=f"✓ Package built: {os.path.basename(res_path)} ({size_kb:.1f} KB) | SHA256: {sha256[:16]}...", fg=C["green"])
-            messagebox.showinfo("Package Build Complete", msg)
-        except Exception as e:
-            self._lbl_status.config(text=f"[-] Error: {e}", fg=C["red"])
-            messagebox.showerror("Build Error", f"Failed to build package:\n{e}")
-
-
-
 def run_config_wizard(
     config_path: str = DEFAULT_CONFIG_FILE,
-    interactive: bool = True,
+    interactive: bool = False,
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     psk: Optional[str] = None,
@@ -1291,44 +685,13 @@ def run_config_wizard(
     cert_file: str = CERT_FILE,
     key_file: str = KEY_FILE,
     allow_cidrs: Optional[List[str]] = None,
-    parent_window: Optional[tk.Tk | tk.Toplevel] = None
+    web_port: int = DEFAULT_WEB_PORT,
+    **kwargs
 ) -> ServerConfig:
     """
     Executes first-run configuration wizard flow.
-    Supports interactive GUI dialog or non-interactive/headless automated generation.
+    Generates automated first-run configuration with secure defaults for headless server operation.
     """
-    if interactive:
-        try:
-            temp_root = None
-            if parent_window is None:
-                temp_root = tk.Tk()
-                temp_root.withdraw()
-                parent = temp_root
-            else:
-                parent = parent_window
-
-            dlg = ConfigWizardDialog(
-                parent,
-                config_path=config_path,
-                host=host,
-                port=port,
-                psk=psk,
-                use_tls=use_tls,
-                cert_file=cert_file,
-                key_file=key_file,
-                allow_cidrs=allow_cidrs,
-            )
-            dlg.wait_window()
-            result = dlg.result_config
-            if temp_root:
-                temp_root.destroy()
-            if result:
-                return result
-            print("[*] Wizard cancelled by user. Using default automated configuration...")
-        except Exception as e:
-            print(f"[*] Interactive wizard unavailable ({e}); falling back to automated setup...")
-
-    # Non-interactive / headless setup
     psk_val = psk or secrets.token_hex(32)
     fingerprint = ""
     if use_tls:
@@ -1343,13 +706,14 @@ def run_config_wizard(
         secure_write_file(FPRINT_FILE, fingerprint)
 
     enrollment = generate_enrollment_credentials(
-        host, port, psk_val, fingerprint, use_tls
+        host, port, psk_val, fingerprint, use_tls, web_port=web_port
     )
     export_enrollment_credentials(enrollment, DEFAULT_ENROLLMENT_FILE)
 
     config = ServerConfig(
         host=host,
         port=port,
+        web_port=web_port,
         psk=psk_val,
         use_tls=use_tls,
         cert_file=cert_file,
@@ -1835,1449 +1199,1379 @@ RATServer = EDRServer  # Backward-compatible alias
 #  GUI & Defense Management Console
 # ════════════════════════════════════════════════════════════════
 
-class App:
+# ════════════════════════════════════════════════════════════════
+#  Authentication & JWT Token Management
+# ════════════════════════════════════════════════════════════════
+
+def create_jwt_token(payload: dict, secret: str, expires_in: int = 86400) -> str:
+    """Creates a standard HMAC-SHA256 (HS256) JWT token."""
+    header = {"alg": "HS256", "typ": "JWT"}
+    now = int(time.time())
+    full_payload = dict(payload)
+    full_payload["iat"] = now
+    full_payload["exp"] = now + expires_in
+
+    def _b64url(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode("utf-8")
+
+    h_b64 = _b64url(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+    p_b64 = _b64url(json.dumps(full_payload, separators=(",", ":")).encode("utf-8"))
+    sig_input = f"{h_b64}.{p_b64}".encode("utf-8")
+    sig = _hmac.new(secret.encode("utf-8"), sig_input, hashlib.sha256).digest()
+    return f"{h_b64}.{p_b64}.{_b64url(sig)}"
+
+
+def verify_jwt_token(token: str, secret: str) -> Optional[dict]:
+    """Validates an HS256 JWT token signature and expiration."""
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        h_b64, p_b64, s_b64 = parts
+        sig_input = f"{h_b64}.{p_b64}".encode("utf-8")
+        expected_sig = _hmac.new(secret.encode("utf-8"), sig_input, hashlib.sha256).digest()
+
+        rem = len(s_b64) % 4
+        s_pad = s_b64 + ("=" * (4 - rem) if rem else "")
+        claimed_sig = base64.urlsafe_b64decode(s_pad.encode("utf-8"))
+        if not _hmac.compare_digest(expected_sig, claimed_sig):
+            return None
+
+        rem_p = len(p_b64) % 4
+        p_pad = p_b64 + ("=" * (4 - rem_p) if rem_p else "")
+        payload = json.loads(base64.urlsafe_b64decode(p_pad.encode("utf-8")).decode("utf-8"))
+        if payload.get("exp", 0) < int(time.time()):
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+# ════════════════════════════════════════════════════════════════
+#  Single Page Application (SPA) HTML5 Dashboard
+# ════════════════════════════════════════════════════════════════
+
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Server-EDR // Defense Console</title>
+  <style>
+    :root {
+      --bg: #1e1e2e;
+      --mantle: #181825;
+      --crust: #11111b;
+      --surface0: #313244;
+      --surface1: #45475a;
+      --surface2: #585b70;
+      --overlay0: #6c7086;
+      --text: #cdd6f4;
+      --subtext: #a6adc8;
+      --blue: #89b4fa;
+      --lavender: #b4befe;
+      --mauve: #cba6f7;
+      --red: #f38ba8;
+      --peach: #fab387;
+      --yellow: #f9e2af;
+      --green: #a6e3a1;
+      --teal: #94e2d5;
+      --mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    header {
+      background: var(--crust);
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--surface0);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      font-size: 16px;
+      letter-spacing: 0.5px;
+      color: var(--blue);
+      font-family: var(--mono);
+    }
+    .header-badges {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .badge {
+      background: var(--surface0);
+      color: var(--subtext);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-family: var(--mono);
+    }
+    .badge-live {
+      background: rgba(166, 227, 161, 0.15);
+      color: var(--green);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .live-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: pulse 1.8s infinite;
+    }
+    @keyframes pulse {
+      0% { opacity: 0.4; }
+      50% { opacity: 1; transform: scale(1.2); }
+      100% { opacity: 0.4; }
+    }
+    .agent-bar {
+      background: var(--mantle);
+      padding: 8px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--surface0);
+      gap: 16px;
+    }
+    .agent-select-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 1;
+    }
+    select, input, textarea {
+      background: var(--surface0);
+      border: 1px solid var(--surface1);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+      font-family: inherit;
+    }
+    select:focus, input:focus, textarea:focus {
+      border-color: var(--blue);
+    }
+    .nav-tabs {
+      background: var(--crust);
+      display: flex;
+      border-bottom: 1px solid var(--surface0);
+      padding: 0 20px;
+    }
+    .tab-btn {
+      background: none;
+      border: none;
+      color: var(--subtext);
+      padding: 12px 18px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active {
+      color: var(--blue);
+      border-bottom: 2px solid var(--blue);
+      background: rgba(137, 180, 250, 0.05);
+    }
+    .content-area {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      background: var(--bg);
+    }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+    .card {
+      background: var(--mantle);
+      border: 1px solid var(--surface0);
+      border-radius: 8px;
+      padding: 18px;
+      margin-bottom: 18px;
+    }
+    .card-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--lavender);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .btn {
+      background: var(--surface1);
+      border: 1px solid var(--surface2);
+      color: var(--text);
+      padding: 7px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: all 0.2s;
+    }
+    .btn:hover { background: var(--surface2); }
+    .btn-primary { background: #3b5998; border-color: var(--blue); color: white; }
+    .btn-primary:hover { background: var(--blue); color: var(--crust); }
+    .btn-danger { background: rgba(243, 139, 168, 0.2); border-color: var(--red); color: var(--red); }
+    .btn-danger:hover { background: var(--red); color: var(--crust); }
+    .btn-success { background: rgba(166, 227, 161, 0.2); border-color: var(--green); color: var(--green); }
+    .btn-success:hover { background: var(--green); color: var(--crust); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: 13px;
+    }
+    th, td {
+      padding: 10px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--surface0);
+    }
+    th {
+      background: var(--crust);
+      color: var(--subtext);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    tr:hover td { background: rgba(255, 255, 255, 0.02); }
+    .log-box {
+      background: var(--crust);
+      border: 1px solid var(--surface0);
+      border-radius: 6px;
+      padding: 12px;
+      font-family: var(--mono);
+      font-size: 12px;
+      height: 300px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      color: var(--text);
+      line-height: 1.6;
+    }
+    .badge-critical { background: rgba(243, 139, 168, 0.25); color: var(--red); font-weight: bold; padding: 2px 8px; border-radius: 4px; }
+    .badge-high { background: rgba(250, 179, 135, 0.25); color: var(--peach); font-weight: bold; padding: 2px 8px; border-radius: 4px; }
+    .badge-medium { background: rgba(249, 226, 175, 0.25); color: var(--yellow); font-weight: bold; padding: 2px 8px; border-radius: 4px; }
+    .badge-low { background: rgba(137, 180, 250, 0.25); color: var(--blue); padding: 2px 8px; border-radius: 4px; }
+    .pill { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-family: var(--mono); background: var(--surface0); }
+    .containment-banner {
+      background: rgba(243, 139, 168, 0.1);
+      border: 1px solid var(--red);
+      padding: 14px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(4px);
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    .modal.active { display: flex; }
+    .modal-box {
+      background: var(--mantle);
+      border: 1px solid var(--surface0);
+      border-radius: 10px;
+      padding: 24px;
+      width: 420px;
+      max-width: 90%;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span>🛡️</span> SERVER-EDR // DEFENSE CONSOLE
+    </div>
+    <div class="header-badges">
+      <span class="badge">C2 Port: <strong id="c2-port-val">443</strong></span>
+      <span class="badge">Web Port: <strong id="web-port-val">8443</strong></span>
+      <span class="badge">Active Sensors: <strong id="active-sensor-count">0</strong></span>
+      <span class="badge badge-live" id="ws-indicator"><span class="live-dot"></span> <span id="ws-status-text">CONNECTING</span></span>
+      <button class="btn" id="btn-auth" onclick="showAuthModal()">Auth</button>
+    </div>
+  </header>
+
+  <div class="agent-bar">
+    <div class="agent-select-wrap">
+      <label style="font-weight: 600; color: var(--subtext);">Target Sensor:</label>
+      <select id="agent-select" onchange="onAgentSelectChange()" style="min-width: 320px;">
+        <option value="">-- No Agents Connected --</option>
+      </select>
+      <span id="agent-attest-badge" class="badge" style="display: none;">Verified ✓</span>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button class="btn" onclick="refreshAgents()">🔄 Refresh</button>
+      <button class="btn" onclick="dispatchQuick('ping')">Ping</button>
+      <button class="btn" onclick="dispatchQuick('sysinfo')">Sysinfo</button>
+      <button class="btn" onclick="dispatchQuick('attest')">Verify Attestation</button>
+    </div>
+  </div>
+
+  <div class="nav-tabs">
+    <button class="tab-btn active" onclick="switchTab('alerts')">🚨 Security Alerts</button>
+    <button class="tab-btn" onclick="switchTab('malware')">🦠 Malware & Quarantine</button>
+    <button class="tab-btn" onclick="switchTab('fim')">📂 File Integrity (FIM)</button>
+    <button class="tab-btn" onclick="switchTab('dlp')">🔒 Data Loss Prevention (DLP)</button>
+    <button class="tab-btn" onclick="switchTab('openedr')">⚡ OpenEDR & Host Containment</button>
+  </div>
+
+  <div class="content-area">
+    <!-- Tab 1: Security Alerts -->
+    <div id="tab-alerts" class="tab-pane active">
+      <div class="card">
+        <div class="card-title">
+          <span>Unified Real-Time Security Alert Stream</span>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn" onclick="clearAlerts()">Clear Feed</button>
+            <button class="btn" onclick="exportAlerts()">Export JSON</button>
+          </div>
+        </div>
+        <div class="filter-bar">
+          <label style="color: var(--subtext);">Subsystem:</label>
+          <select id="filter-subsystem" onchange="applyAlertFilters()">
+            <option value="">ALL Subsystems</option>
+            <option value="fim">FIM</option>
+            <option value="dlp">DLP</option>
+            <option value="malware">Malware</option>
+            <option value="openedr">OpenEDR</option>
+            <option value="tamper">Anti-Tamper</option>
+          </select>
+          <label style="color: var(--subtext); margin-left: 12px;">Severity:</label>
+          <select id="filter-severity" onchange="applyAlertFilters()">
+            <option value="">ALL Severities</option>
+            <option value="CRITICAL">CRITICAL</option>
+            <option value="HIGH">HIGH</option>
+            <option value="MEDIUM">MEDIUM</option>
+            <option value="LOW">LOW</option>
+          </select>
+          <input type="text" id="filter-search" placeholder="Search title or details..." oninput="applyAlertFilters()" style="flex: 1; min-width: 200px;">
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 160px;">Timestamp</th>
+              <th style="width: 140px;">Host / Agent</th>
+              <th style="width: 100px;">Subsystem</th>
+              <th style="width: 100px;">Severity</th>
+              <th>Alert Details</th>
+            </tr>
+          </thead>
+          <tbody id="alerts-tbody">
+            <tr><td colspan="5" style="text-align: center; color: var(--overlay0);">No security events recorded.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Tab 2: Malware & Quarantine -->
+    <div id="tab-malware" class="tab-pane">
+      <div class="card">
+        <div class="card-title">Remote File System Scanner (On-Demand)</div>
+        <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+          <input type="text" id="malware-scan-path" value="." placeholder="Target directory or file path to scan..." style="flex: 1;">
+          <button class="btn btn-primary" onclick="runMalwareScan()">🔍 Run Malware Scan</button>
+        </div>
+        <div id="malware-scan-results" class="log-box" style="height: 140px;">Ready to scan endpoint file system.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Quarantine Vault Manager (Isolated Threats)</div>
+        <div style="display: flex; gap: 10px; margin-bottom: 16px;">
+          <input type="text" id="quarantine-target-path" placeholder="Path to suspicious executable to isolate..." style="flex: 1;">
+          <button class="btn btn-danger" onclick="quarantineTargetFile()">⚠️ Quarantine File</button>
+          <button class="btn" onclick="refreshQuarantineVault()">🔄 Refresh Vault</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Quarantine Item</th>
+              <th>Original Path</th>
+              <th>Quarantine Time</th>
+              <th>SHA-256 Hash</th>
+              <th style="width: 110px;">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="quarantine-tbody">
+            <tr><td colspan="5" style="text-align: center; color: var(--overlay0);">No files currently quarantined.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Tab 3: File Integrity Monitoring (FIM) -->
+    <div id="tab-fim" class="tab-pane">
+      <div class="card">
+        <div class="card-title">
+          <span>File Integrity Baselines & Monitoring Controls</span>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-primary" onclick="dispatchQuick('fim_init')">⚡ Init / Rebuild Baseline</button>
+            <button class="btn" onclick="dispatchQuick('fim_check')">🔎 Run Integrity Audit</button>
+          </div>
+        </div>
+        <div style="display: flex; gap: 10px; margin-top: 10px;">
+          <input type="text" id="fim-add-path-input" placeholder="Enter path to add to monitoring scope..." style="flex: 1;">
+          <button class="btn" onclick="addFimPath()">+ Add Monitored Path</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">FIM Change Event Audit Feed</div>
+        <div id="fim-log-box" class="log-box">FIM monitoring initialized. Real-time integrity changes appear here.</div>
+      </div>
+    </div>
+
+    <!-- Tab 4: Data Loss Prevention (DLP) -->
+    <div id="tab-dlp" class="tab-pane">
+      <div class="card">
+        <div class="card-title">Inspect Sensitive Data & PII (Credit Cards / API Keys / SSN)</div>
+        <textarea id="dlp-input-text" rows="4" style="width: 100%; margin-bottom: 10px;" placeholder="Paste text buffer or enter target file path to inspect for PII or API tokens..."></textarea>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <button class="btn btn-primary" onclick="runDlpScan()">🔍 Inspect Sensitive Data</button>
+          <span style="color: var(--subtext); font-size: 12px; margin-left: 10px;">Test Presets:</span>
+          <button class="btn" onclick="setDlpPreset('visa')">Test Visa (Luhn)</button>
+          <button class="btn" onclick="setDlpPreset('aws')">Test AWS Key</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">DLP Rule Violations & Redacted Findings</div>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 140px;">Rule Name</th>
+              <th style="width: 110px;">Severity</th>
+              <th>Redacted Preview</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="dlp-tbody">
+            <tr><td colspan="4" style="text-align: center; color: var(--overlay0);">No sensitive data violations detected.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Tab 5: OpenEDR & Host Containment -->
+    <div id="tab-openedr" class="tab-pane">
+      <div class="containment-banner">
+        <div>
+          <strong style="color: var(--red); font-size: 15px;">🚨 Emergency Host Containment & Network Isolation</strong>
+          <p style="color: var(--subtext); font-size: 12px; margin-top: 4px;">Sever all inbound and outbound host network connections instantly while preserving the secure Server-EDR C2 channel on port 443.</p>
+        </div>
+        <div style="display: flex; gap: 10px;">
+          <button class="btn btn-danger" onclick="isolateHost(true)">EMERGENCY ISOLATE HOST</button>
+          <button class="btn btn-success" onclick="isolateHost(false)">RESTORE NETWORK</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <span>OpenEDR Sensor Health & Control</span>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn" onclick="checkOpenEdrStatus()">Check Status</button>
+            <button class="btn" onclick="fetchOpenEdrTelemetry()">Fetch Telemetry Events</button>
+            <button class="btn" onclick="installOpenEdr()">Install OpenEDR</button>
+          </div>
+        </div>
+        <div style="display: flex; gap: 20px; font-family: var(--mono); font-size: 13px; margin-top: 8px;">
+          <div>Service: <span id="edr-svc-badge" class="badge">Unknown</span></div>
+          <div>Kernel Minifilter: <span id="edr-filter-badge" class="badge">N/A</span></div>
+          <div>Log Size: <span id="edr-log-size">N/A</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Live Kernel & OpenEDR Telemetry Stream</div>
+        <div id="telemetry-log-box" class="log-box">Telemetry events from OpenEDR kernel sensors stream here live...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal for Admin Auth -->
+  <div id="modal-auth" class="modal">
+    <div class="modal-box">
+      <h3 style="color: var(--blue); margin-bottom: 12px;">Administrator Authentication</h3>
+      <p style="color: var(--subtext); font-size: 13px; margin-bottom: 16px;">Enter the Pre-Shared Key (PSK) or administrator password configured for Server-EDR:</p>
+      <input type="password" id="auth-psk-input" placeholder="Pre-Shared Key (PSK)..." style="width: 100%; margin-bottom: 16px;">
+      <div style="display: flex; justify-content: flex-end; gap: 8px;">
+        <button class="btn" onclick="showAuthModal(false)">Cancel</button>
+        <button class="btn btn-primary" onclick="doAuthLogin()">Authenticate</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      token: localStorage.getItem('edr_jwt') || '',
+      agents: [],
+      selectedAgentId: '',
+      alerts: [],
+      quarantine: [],
+      activeTab: 'alerts',
+      ws: null
+    };
+
+    async function api(url, method = 'GET', body = null) {
+      const headers = { 'Content-Type': 'application/json' };
+      if (state.token) headers['Authorization'] = 'Bearer ' + state.token;
+      const opts = { method, headers };
+      if (body) opts.body = JSON.stringify(body);
+      try {
+        const res = await fetch(url, opts);
+        if (res.status === 401) {
+          showAuthModal(true);
+          return { status: 'error', error: 'Unauthorized' };
+        }
+        return await res.json();
+      } catch (e) {
+        return { status: 'error', error: e.toString() };
+      }
+    }
+
+    function showAuthModal(show = true) {
+      document.getElementById('modal-auth').classList.toggle('active', show);
+      if (show) document.getElementById('auth-psk-input').focus();
+    }
+
+    async function doAuthLogin() {
+      const psk = document.getElementById('auth-psk-input').value.trim();
+      const res = await api('/api/v1/auth/login', 'POST', { password: psk });
+      if (res.status === 'ok') {
+        state.token = res.token;
+        localStorage.setItem('edr_jwt', res.token);
+        showAuthModal(false);
+        document.getElementById('btn-auth').textContent = 'Logged In ✓';
+        initWS();
+        refreshAgents();
+        refreshAlerts();
+      } else {
+        alert('Authentication failed: ' + (res.error || 'Invalid credentials'));
+      }
+    }
+
+    function switchTab(name) {
+      state.activeTab = name;
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      event.target.classList.add('active');
+      document.getElementById('tab-' + name).classList.add('active');
+      if (name === 'quarantine') refreshQuarantineVault();
+    }
+
+    async function refreshAgents() {
+      const res = await api('/api/v1/agents');
+      if (res.status === 'ok') {
+        state.agents = res.agents || [];
+        const select = document.getElementById('agent-select');
+        select.innerHTML = '';
+        if (state.agents.length === 0) {
+          select.innerHTML = '<option value="">-- No Agents Connected --</option>';
+          document.getElementById('active-sensor-count').textContent = '0';
+          document.getElementById('agent-attest-badge').style.display = 'none';
+          state.selectedAgentId = '';
+        } else {
+          document.getElementById('active-sensor-count').textContent = state.agents.length;
+          state.agents.forEach(a => {
+            const opt = document.createElement('option');
+            opt.value = a.id;
+            opt.textContent = `${a.hostname} (${a.ip} - ${a.os}) [${a.attestation_status}]`;
+            select.appendChild(opt);
+          });
+          if (!state.selectedAgentId || !state.agents.some(a => a.id === state.selectedAgentId)) {
+            state.selectedAgentId = state.agents[0].id;
+          }
+          select.value = state.selectedAgentId;
+          onAgentSelectChange();
+        }
+      }
+    }
+
+    function onAgentSelectChange() {
+      state.selectedAgentId = document.getElementById('agent-select').value;
+      const agent = state.agents.find(a => a.id === state.selectedAgentId);
+      const badge = document.getElementById('agent-attest-badge');
+      if (agent) {
+        badge.style.display = 'inline-block';
+        badge.textContent = agent.attestation_status;
+        badge.style.color = agent.attestation_status.includes('Verified') ? 'var(--green)' :
+                           (agent.attestation_status.includes('TAMPER') ? 'var(--red)' : 'var(--yellow)');
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+
+    async function dispatchQuick(cmd, args = null) {
+      if (!state.selectedAgentId) {
+        alert('Please select an active target sensor first.');
+        return;
+      }
+      const res = await api('/api/v1/commands/dispatch', 'POST', {
+        agent_id: state.selectedAgentId,
+        command: cmd,
+        args: args
+      });
+      if (res.status === 'ok') {
+        const out = res.response ? (res.response.output || JSON.stringify(res.response)) : 'Command sent';
+        alert(`[${cmd}] Response from ${res.hostname}:
+
+` + out);
+        refreshAgents();
+      } else {
+        alert(`[!] Command error: ` + (res.error || 'Failed'));
+      }
+    }
+
+    async function refreshAlerts() {
+      const res = await api('/api/v1/alerts');
+      if (res.status === 'ok') {
+        state.alerts = res.alerts || [];
+        renderAlertsTable();
+      }
+    }
+
+    function renderAlertsTable() {
+      const tbody = document.getElementById('alerts-tbody');
+      const sub = document.getElementById('filter-subsystem').value.toLowerCase();
+      const sev = document.getElementById('filter-severity').value.toUpperCase();
+      const query = document.getElementById('filter-search').value.toLowerCase();
+
+      const filtered = state.alerts.filter(a => {
+        if (sub && (a.subsystem || '').toLowerCase() !== sub) return false;
+        if (sev && (a.severity || '').toUpperCase() !== sev) return false;
+        if (query) {
+          const hay = ((a.title || '') + ' ' + (a.details || '') + ' ' + (a.host || '')).toLowerCase();
+          if (!hay.includes(query)) return false;
+        }
+        return true;
+      });
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--overlay0);">No matching security events.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = filtered.map(a => {
+        const sClass = (a.severity === 'CRITICAL') ? 'badge-critical' :
+                       (a.severity === 'HIGH') ? 'badge-high' :
+                       (a.severity === 'MEDIUM') ? 'badge-medium' : 'badge-low';
+        return `<tr>
+          <td style="font-family: var(--mono); font-size: 11px; color: var(--subtext);">${(a.timestamp || '').slice(0, 19)}</td>
+          <td><strong>${a.host || a.agent_id || 'Unknown'}</strong></td>
+          <td><span class="pill">${a.subsystem || 'general'}</span></td>
+          <td><span class="${sClass}">${a.severity || 'INFO'}</span></td>
+          <td>
+            <div style="font-weight: 600; color: var(--text);">${a.title || 'Security Event'}</div>
+            <div style="font-size: 12px; color: var(--subtext); margin-top: 2px;">${a.details || ''}</div>
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    function applyAlertFilters() { renderAlertsTable(); }
+    function clearAlerts() { state.alerts = []; renderAlertsTable(); }
+    function exportAlerts() {
+      const blob = new Blob([JSON.stringify(state.alerts, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `edr-alerts-${Date.now()}.json`;
+      a.click();
+    }
+
+    async function runMalwareScan() {
+      if (!state.selectedAgentId) return alert('Select a sensor first.');
+      const path = document.getElementById('malware-scan-path').value.trim() || '.';
+      const box = document.getElementById('malware-scan-results');
+      box.textContent = `[*] Scanning path '${path}' on selected endpoint...`;
+      const res = await api('/api/v1/commands/dispatch', 'POST', {
+        agent_id: state.selectedAgentId,
+        command: 'malware_scan',
+        args: path,
+        timeout: 60
+      });
+      if (res.status === 'ok') {
+        try {
+          const findings = JSON.parse(res.response.output);
+          if (!findings || findings.length === 0) {
+            box.textContent = `✓ Scan complete: No malicious threats detected in '${path}'.`;
+          } else {
+            box.textContent = `🚨 DETECTED ${findings.length} THREATS in '${path}':
+` + JSON.stringify(findings, null, 2);
+          }
+        } catch {
+          box.textContent = res.response.output;
+        }
+      } else {
+        box.textContent = `[-] Scan failed: ${res.error || 'Timeout'}`;
+      }
+    }
+
+    async function quarantineTargetFile() {
+      if (!state.selectedAgentId) return alert('Select a sensor first.');
+      const path = document.getElementById('quarantine-target-path').value.trim();
+      if (!path) return alert('Please enter path to file.');
+      if (!confirm(`Quarantine file '${path}' on selected endpoint?`)) return;
+      const res = await api('/api/v1/commands/dispatch', 'POST', {
+        agent_id: state.selectedAgentId,
+        command: 'quarantine',
+        args: path
+      });
+      alert(res.status === 'ok' ? '✓ ' + res.response.output : '[-] ' + res.error);
+      refreshQuarantineVault();
+    }
+
+    async function refreshQuarantineVault() {
+      const res = await api('/api/v1/quarantine' + (state.selectedAgentId ? '?agent_id=' + state.selectedAgentId : ''));
+      const tbody = document.getElementById('quarantine-tbody');
+      if (res.status === 'ok' && res.quarantine && res.quarantine.length > 0) {
+        tbody.innerHTML = res.quarantine.map(item => {
+          return `<tr>
+            <td style="font-family: var(--mono);">${item.quarantine_file}</td>
+            <td>${item.original_path}</td>
+            <td>${new Date((item.quarantine_time || 0) * 1000).toLocaleString()}</td>
+            <td style="font-family: var(--mono); font-size: 11px;">${(item.hash || '').slice(0, 16)}...</td>
+            <td><button class="btn btn-success" style="padding: 3px 8px; font-size: 11px;" onclick="restoreQuarantineFile('${item.quarantine_file}')">Restore</button></td>
+          </tr>`;
+        }).join('');
+      } else {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--overlay0);">No files currently quarantined.</td></tr>';
+      }
+    }
+
+    async function restoreQuarantineFile(file) {
+      if (!confirm(`Restore quarantined file '${file}' to its original location?`)) return;
+      const res = await api('/api/v1/commands/dispatch', 'POST', {
+        agent_id: state.selectedAgentId,
+        command: 'quarantine_restore',
+        args: file
+      });
+      alert(res.status === 'ok' ? '✓ ' + res.response.output : '[-] ' + res.error);
+      refreshQuarantineVault();
+    }
+
+    async function addFimPath() {
+      const path = document.getElementById('fim-add-path-input').value.trim();
+      if (!path) return;
+      dispatchQuick('fim_add_path', path);
+      document.getElementById('fim-add-path-input').value = '';
+    }
+
+    async function runDlpScan() {
+      if (!state.selectedAgentId) return alert('Select a sensor first.');
+      const txt = document.getElementById('dlp-input-text').value.trim();
+      if (!txt) return alert('Enter buffer text or file path to scan.');
+      const res = await api('/api/v1/commands/dispatch', 'POST', {
+        agent_id: state.selectedAgentId,
+        command: 'dlp_scan',
+        args: txt
+      });
+      const tbody = document.getElementById('dlp-tbody');
+      if (res.status === 'ok') {
+        try {
+          const findings = JSON.parse(res.response.output);
+          if (!findings || findings.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--green);">✓ Scan passed: 0 sensitive items detected.</td></tr>';
+          } else {
+            tbody.innerHTML = findings.map(f => `<tr>
+              <td><strong>${f.rule}</strong></td>
+              <td><span class="badge-high">${f.severity || 'HIGH'}</span></td>
+              <td style="font-family: var(--mono);">${f.preview || ''}</td>
+              <td>Rule violation matched in buffer/file</td>
+            </tr>`).join('');
+          }
+        } catch {
+          tbody.innerHTML = `<tr><td colspan="4">${res.response.output}</td></tr>`;
+        }
+      } else {
+        tbody.innerHTML = `<tr><td colspan="4" style="color: var(--red);">Error: ${res.error}</td></tr>`;
+      }
+    }
+
+    function setDlpPreset(type) {
+      const inp = document.getElementById('dlp-input-text');
+      if (type === 'visa') inp.value = "Customer Visa payment card record: 4532 0150 1234 5671 for account verification.";
+      if (type === 'aws') inp.value = "AWS Cloud Secrets: AKIAIOSFODNN7EXAMPLE and secret key payload.";
+    }
+
+    async function checkOpenEdrStatus() {
+      if (!state.selectedAgentId) return alert('Select a sensor first.');
+      const res = await api('/api/v1/commands/dispatch', 'POST', {
+        agent_id: state.selectedAgentId,
+        command: 'openedr_status'
+      });
+      if (res.status === 'ok') {
+        try {
+          const st = JSON.parse(res.response.output);
+          document.getElementById('edr-svc-badge').textContent = st.running ? 'Running ✓' : 'Stopped';
+          document.getElementById('edr-svc-badge').style.color = st.running ? 'var(--green)' : 'var(--peach)';
+          document.getElementById('edr-filter-badge').textContent = st.minifilter ? 'Loaded ✓' : 'Standard';
+          document.getElementById('edr-log-size').textContent = (st.log_size_bytes / (1024*1024)).toFixed(2) + ' MB';
+        } catch {
+          alert(res.response.output);
+        }
+      }
+    }
+
+    async function fetchOpenEdrTelemetry() {
+      if (!state.selectedAgentId) return alert('Select a sensor first.');
+      const res = await api('/api/v1/commands/dispatch', 'POST', {
+        agent_id: state.selectedAgentId,
+        command: 'openedr_fetch_telemetry'
+      });
+      const box = document.getElementById('telemetry-log-box');
+      if (res.status === 'ok') {
+        box.textContent = `=== OpenEDR Telemetry Frame ===
+` + res.response.output;
+      }
+    }
+
+    async function installOpenEdr() {
+      if (!confirm('Deploy and configure OpenEDR service on selected endpoint sensor?')) return;
+      dispatchQuick('install_openedr');
+    }
+
+    async function isolateHost(enable) {
+      const verb = enable ? 'ISOLATE' : 'RESTORE NETWORK FOR';
+      if (!confirm(`Are you sure you want to ${verb} the selected endpoint host?
+
+This will drop all external network connections while preserving the Server-EDR C2 channel.`)) return;
+      const res = await api('/api/v1/commands/dispatch', 'POST', {
+        agent_id: state.selectedAgentId,
+        command: 'isolate_host',
+        args: enable ? 'true' : 'false'
+      });
+      alert(res.status === 'ok' ? res.response.output : '[-] ' + res.error);
+    }
+
+    function initWS() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = `${proto}//${location.host}/ws/live-stream${state.token ? '?token=' + encodeURIComponent(state.token) : ''}`;
+      try {
+        state.ws = new WebSocket(url);
+      } catch (e) {
+        document.getElementById('ws-status-text').textContent = 'ERROR';
+        return;
+      }
+      state.ws.onopen = () => {
+        document.getElementById('ws-status-text').textContent = 'LIVE STREAM';
+        document.getElementById('ws-indicator').style.color = 'var(--green)';
+      };
+      state.ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'security_event' && msg.alert) {
+            state.alerts.unshift(msg.alert);
+            renderAlertsTable();
+          } else if (msg.type === 'telemetry') {
+            const box = document.getElementById('telemetry-log-box');
+            box.textContent = `[${new Date().toLocaleTimeString()}] ${JSON.stringify(msg.telemetry, null, 2)}\n` + box.textContent.slice(0, 10000);
+          } else if (msg.type === 'agent_connected' || msg.type === 'agent_disconnected' || msg.type === 'attestation_update') {
+            refreshAgents();
+          }
+        } catch (e) { console.error('WS parse error:', e); }
+      };
+      state.ws.onclose = () => {
+        document.getElementById('ws-status-text').textContent = 'DISCONNECTED';
+        document.getElementById('ws-indicator').style.color = 'var(--red)';
+        setTimeout(initWS, 4000);
+      };
+    }
+
+    // Initialize on load
+    window.addEventListener('load', () => {
+      refreshAgents();
+      refreshAlerts();
+      initWS();
+      setInterval(refreshAgents, 15000);
+    });
+  </script>
+</body>
+</html>
+"""
+
+
+# ════════════════════════════════════════════════════════════════
+#  Web Portal Engine (HTTPS / REST API / WebSocket Streaming)
+# ════════════════════════════════════════════════════════════════
+
+class WebPortal:
+    """
+    Headless Web Portal listening on port 8443 (or custom web_port)
+    providing REST endpoints and WebSocket live-stream.
+    Shares the server TLS context with the C2 engine.
+    """
     def __init__(
         self,
-        root: tk.Tk,
-        host: str,
-        port: int,
-        psk: str,
-        tls_context: Optional[ssl.SSLContext],
-        fingerprint: Optional[str],
-        allow_nets: Optional[List[IPv4Network]],
+        server: EDRServer,
+        host: str = DEFAULT_HOST,
+        port: int = DEFAULT_WEB_PORT,
         config: Optional[ServerConfig] = None,
+        tls_context: Optional[ssl.SSLContext] = None,
     ):
-        self.root = root
+        self.server = server
+        self.host = host
+        self.port = port
         self.config = config
-        self.root.title("EDR Server // Endpoint Detection, Response & Defense Platform")
-        self.root.geometry("1340x860")
-        self.root.minsize(1050, 680)
-        self.root.configure(bg=C["base"])
+        self.tls_context = tls_context
+        self.psk = (config.psk if config else "").strip()
+        self._app = web.Application()
+        self._runner: Optional[web.AppRunner] = None
+        self._site: Optional[web.TCPSite] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+        self._ws_clients: Set[web.WebSocketResponse] = set()
 
-        self._host        = host
-        self._port        = port
-        self._tls         = tls_context is not None
-        self._fingerprint = fingerprint
-
-        self.server = EDRServer(host, port, psk, tls_context, allow_nets)
+        self._setup_routes()
         self.server.on_event(self._on_server_event)
 
-        self._sel_id: Optional[str]    = None
-        self._tree_map: Dict[str, str] = {}
-        self._cmd_history: List[str]   = []
-        self._hist_idx: int            = -1
-        self._proc_cache: List         = []
-        self._sysinfo_tab_frame: Optional[tk.Frame] = None
-        self._gui_event_queue: queue.Queue = queue.Queue()
+    @property
+    def app(self) -> web.Application:
+        return self._app
 
-        self._apply_styles()
-        self._build_ui()
-        self._start_clock()
-        self.root.after(100, self._flush_gui_events)
+    def _setup_routes(self):
+        # REST API Routes
+        self._app.router.add_post("/api/v1/auth/login", self.handle_login)
+        self._app.router.add_get("/api/v1/agents", self.handle_get_agents)
+        self._app.router.add_get("/api/v1/alerts", self.handle_get_alerts)
+        self._app.router.add_post("/api/v1/commands/dispatch", self.handle_command_dispatch)
+        self._app.router.add_get("/api/v1/quarantine", self.handle_get_quarantine)
+        self._app.router.add_get("/api/v1/status", self.handle_status)
 
-        self.server.start()
-        tls_badge = "TLS ✓" if self._tls else "⚠ NO TLS"
-        self._log(f"[+] Endpoint Defense Server Listening on {host}:{port}  [{tls_badge}]",
-                  "success" if self._tls else "warn")
-        if fingerprint:
-            self._log(f"[*] SHA-256 Fingerprint: {fingerprint}", "dim")
-        self._log("[*] Defense Sensors active: Malware Prevention, FIM, DLP, OpenEDR", "info")
+        # WebSocket Live Stream Route
+        self._app.router.add_get("/ws/live-stream", self.handle_ws)
 
-    def _apply_styles(self):
-        s = ttk.Style()
-        s.theme_use("clam")
-        s.configure(".", background=C["base"], foreground=C["text"],
-                     font=(MONO, 10), borderwidth=0, relief="flat")
-        s.configure("Treeview", background=C["mantle"], foreground=C["text"],
-                     fieldbackground=C["mantle"], rowheight=26,
-                     borderwidth=0, relief="flat")
-        s.configure("Treeview.Heading", background=C["surface0"], foreground=C["blue"],
-                     font=(MONO, 10, "bold"), relief="flat")
-        s.map("Treeview",
-              background=[("selected", C["surface0"])],
-              foreground=[("selected", C["lavender"])])
-        s.configure("TButton", background=C["surface0"], foreground=C["text"],
-                     font=(MONO, 10), padding=(8, 4), relief="flat")
-        s.map("TButton",
-              background=[("active", C["surface1"]), ("pressed", C["surface2"])])
-        s.configure("Accent.TButton", background=C["blue"], foreground=C["crust"],
-                     font=(MONO, 10, "bold"), padding=(10, 4))
-        s.map("Accent.TButton", background=[("active", C["lavender"])])
-        s.configure("Danger.TButton", background=C["red"], foreground=C["crust"],
-                     font=(MONO, 10, "bold"), padding=(8, 4))
-        s.map("Danger.TButton", background=[("active", "#ff9999")])
-        s.configure("Success.TButton", background=C["green"], foreground=C["crust"],
-                     font=(MONO, 10, "bold"), padding=(8, 4))
-        s.map("Success.TButton", background=[("active", "#b8f0b4")])
-        s.configure("TFrame", background=C["base"])
-        s.configure("TLabel", background=C["base"], foreground=C["text"])
-        s.configure("TEntry", fieldbackground=C["surface0"], foreground=C["text"],
-                     insertcolor=C["text"], borderwidth=1, relief="solid")
-        s.configure("TNotebook", background=C["base"], tabmargins=(2, 4, 0, 0),
-                     borderwidth=0)
-        s.configure("TNotebook.Tab", background=C["surface0"], foreground=C["subtext"],
-                     padding=(12, 5), font=(MONO, 10))
-        s.map("TNotebook.Tab",
-              background=[("selected", C["base"])],
-              foreground=[("selected", C["blue"])])
-        s.configure("TScrollbar", background=C["surface0"], troughcolor=C["mantle"],
-                     arrowcolor=C["overlay0"], borderwidth=0, relief="flat")
-        s.map("TScrollbar", background=[("active", C["surface1"])])
+        # HTML5 Single Page Application Dashboard
+        self._app.router.add_get("/", self.handle_dashboard)
+        self._app.router.add_get("/index.html", self.handle_dashboard)
 
-    def _build_ui(self):
-        # Top bar
-        topbar = tk.Frame(self.root, bg=C["crust"], height=44)
-        topbar.pack(fill="x", side="top")
-        topbar.pack_propagate(False)
-        tk.Label(topbar, text="🛡️  ENDPOINT DEFENSE & EDR CONSOLE", bg=C["crust"], fg=C["blue"],
-                 font=(MONO, 13, "bold")).pack(side="left", padx=16, pady=8)
-        self._lbl_count = tk.Label(topbar, text="Sensors: 0", bg=C["crust"],
-                                    fg=C["green"], font=(MONO, 10))
-        self._lbl_count.pack(side="left", padx=12)
-        tls_color = C["green"] if self._tls else C["peach"]
-        tls_label = "TLS 1.2+ ✓" if self._tls else "⚠ NO TLS"
-        tk.Label(topbar, text=tls_label, bg=C["crust"], fg=tls_color,
-                 font=(MONO, 10, "bold")).pack(side="left", padx=8)
-        self._lbl_alert_badge = tk.Label(topbar, text="Alerts: 0", bg=C["crust"],
-                                         fg=C["peach"], font=(MONO, 10, "bold"))
-        self._lbl_alert_badge.pack(side="left", padx=12)
+        # CORS Options handler
+        self._app.router.add_route("OPTIONS", "/{tail:.*}", self.handle_options)
 
-        ttk.Button(topbar, text="⚙️ Config", command=self._show_config_dialog).pack(side="right", padx=4)
-        ttk.Button(topbar, text="🔑 Enrollment", command=self._show_enrollment_dialog).pack(side="right", padx=4)
-        ttk.Button(topbar, text="📦 Build Package", command=self._show_package_builder_dialog).pack(side="right", padx=4)
-        self._lbl_clock = tk.Label(topbar, text="", bg=C["crust"], fg=C["overlay0"],
-                                    font=(MONO, 10))
-        self._lbl_clock.pack(side="right", padx=8)
+    def _check_auth(self, request: web.Request) -> bool:
+        expected_psk = self.psk or (self.server._psk.decode() if self.server and self.server._psk else "")
+        if not expected_psk:
+            return True
 
-        # Main split
-        pane = ttk.PanedWindow(self.root, orient="horizontal")
-        pane.pack(fill="both", expand=True)
-        lf = tk.Frame(pane, bg=C["base"], width=310)
-        pane.add(lf, weight=1)
-        self._build_agent_panel(lf)
-        rf = tk.Frame(pane, bg=C["base"])
-        pane.add(rf, weight=5)
-        self._build_workspace(rf)
+        # 1. Bearer Token Header
+        auth_hdr = request.headers.get("Authorization", "")
+        if auth_hdr.startswith("Bearer "):
+            token = auth_hdr[7:].strip()
+            payload = verify_jwt_token(token, expected_psk)
+            if payload:
+                return True
 
-        # Status bar
-        sb = tk.Frame(self.root, bg=C["crust"], height=24)
-        sb.pack(fill="x", side="bottom")
-        sb.pack_propagate(False)
-        self._lbl_status = tk.Label(sb, text="Ready", bg=C["crust"], fg=C["overlay0"],
-                                     font=(MONO, 9))
-        self._lbl_status.pack(side="left", padx=12)
-        tk.Label(sb, text=f"Listening  •  {self._host}:{self._port}",
-                 bg=C["crust"], fg=C["teal"], font=(MONO, 9)).pack(side="right", padx=12)
+        # 2. Query param ?token=
+        q_token = request.query.get("token", "").strip()
+        if q_token:
+            payload = verify_jwt_token(q_token, expected_psk)
+            if payload:
+                return True
 
-    def _build_agent_panel(self, parent):
-        tk.Label(parent, text="CONNECTED ENDPOINTS", bg=C["base"], fg=C["blue"],
-                 font=(MONO, 10, "bold")).pack(anchor="w", padx=10, pady=(10, 4))
-        tk.Frame(parent, bg=C["surface0"], height=1).pack(fill="x", padx=10)
+        # 3. PSK Header or Param
+        req_psk = request.headers.get("X-EDR-PSK") or request.query.get("psk")
+        if req_psk and req_psk == expected_psk:
+            return True
 
-        cols = ("host", "user", "ip")
-        self._atree = ttk.Treeview(parent, columns=cols, show="headings",
-                                    selectmode="browse", height=20)
-        self._atree.heading("host", text="Hostname")
-        self._atree.heading("user", text="User")
-        self._atree.heading("ip",   text="IP")
-        self._atree.column("host", width=110, minwidth=80)
-        self._atree.column("user", width=90,  minwidth=60)
-        self._atree.column("ip",   width=100, minwidth=80)
-        vsb = ttk.Scrollbar(parent, orient="vertical", command=self._atree.yview)
-        self._atree.configure(yscrollcommand=vsb.set)
-        self._atree.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=8)
-        vsb.pack(side="left", fill="y", pady=8, padx=(2, 8))
-        self._atree.bind("<<TreeviewSelect>>", self._on_select)
+        return False
 
-        bf = tk.Frame(parent, bg=C["base"])
-        bf.pack(fill="x", padx=10, pady=(0, 10))
-        ttk.Button(bf, text="Sysinfo", command=self._cmd_sysinfo).pack(side="left", padx=(0, 4))
-        ttk.Button(bf, text="Disconnect", style="Danger.TButton",
-                   command=self._disconnect).pack(side="right")
+    async def handle_options(self, request: web.Request) -> web.Response:
+        return web.Response(
+            status=204,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization, X-EDR-PSK"
+            }
+        )
 
-    def _build_workspace(self, parent):
-        self._info_strip = tk.Frame(parent, bg=C["mantle"], height=32)
-        self._info_strip.pack(fill="x")
-        self._info_strip.pack_propagate(False)
-        self._lbl_info = tk.Label(self._info_strip, text="  No agent selected",
-                                   bg=C["mantle"], fg=C["overlay0"], font=(MONO, 9))
-        self._lbl_info.pack(side="left", padx=10, pady=5)
-        self._lbl_admin = tk.Label(self._info_strip, text="", bg=C["mantle"],
-                                    fg=C["yellow"], font=(MONO, 9, "bold"))
-        self._lbl_admin.pack(side="right", padx=10)
+    async def handle_dashboard(self, request: web.Request) -> web.Response:
+        # Prepopulate C2 and Web port values in SPA
+        rendered = DASHBOARD_HTML.replace('id="c2-port-val">443<', f'id="c2-port-val">{self.server.port}<')
+        rendered = rendered.replace('id="web-port-val">8443<', f'id="web-port-val">{self.port}<')
+        return web.Response(text=rendered, content_type="text/html")
 
-        self._nb = ttk.Notebook(parent)
-        self._nb.pack(fill="both", expand=True)
-
-        # Core Admin Tabs
-        self._build_terminal_tab()
-        self._build_processes_tab()
-        self._build_files_tab()
-        self._build_sysinfo_tab()
-
-        # Endpoint Defense Tabs
-        self._build_alerts_tab()
-        self._build_malware_tab()
-        self._build_fim_tab()
-        self._build_dlp_tab()
-        self._build_openedr_tab()
-
-    # ── Admin Tabs ───────────────────────────────────────────
-
-    def _build_terminal_tab(self):
-        f = tk.Frame(self._nb, bg=C["base"])
-        self._nb.add(f, text="  Terminal  ")
-        self._term = scrolledtext.ScrolledText(
-            f, bg=C["mantle"], fg=C["text"], insertbackground=C["text"],
-            font=(MONO, 10), state="disabled", wrap="word",
-            relief="flat", bd=0, padx=10, pady=8,
-            selectbackground=C["surface1"])
-        self._term.pack(fill="both", expand=True)
-        for tag, fg in [
-            ("info", C["blue"]), ("success", C["green"]), ("error", C["red"]),
-            ("warn", C["peach"]), ("prompt", C["mauve"]), ("output", C["text"]),
-            ("dim", C["overlay0"]),
-        ]:
-            self._term.tag_config(tag, foreground=fg)
-        self._term.tag_config("ts", foreground=C["overlay0"], font=(MONO, 9))
-
-        ir = tk.Frame(f, bg=C["crust"])
-        ir.pack(fill="x")
-        self._lbl_ps = tk.Label(ir, text="PS >", bg=C["crust"], fg=C["mauve"],
-                                 font=(MONO, 11, "bold"), padx=10, pady=6)
-        self._lbl_ps.pack(side="left")
-        self._entry = ttk.Entry(ir, font=(MONO, 11))
-        self._entry.pack(side="left", fill="x", expand=True, ipady=3)
-        self._entry.bind("<Return>", self._run_shell)
-        self._entry.bind("<Up>",     self._hist_up)
-        self._entry.bind("<Down>",   self._hist_down)
-        ttk.Button(ir, text="Run ▶", style="Accent.TButton",
-                   command=self._run_shell).pack(side="left", padx=(6, 10))
-
-    def _build_processes_tab(self):
-        f = tk.Frame(self._nb, bg=C["base"])
-        self._nb.add(f, text="  Processes  ")
-        bar = tk.Frame(f, bg=C["base"])
-        bar.pack(fill="x", padx=8, pady=6)
-        ttk.Button(bar, text="⟳  Refresh", command=self._refresh_procs).pack(side="left", padx=(0, 4))
-        ttk.Button(bar, text="⛔  Kill", style="Danger.TButton", command=self._kill_proc).pack(side="left", padx=4)
-        tk.Label(bar, text="Filter:", bg=C["base"], fg=C["subtext"]).pack(side="right", padx=(4, 0))
-        self._pf = ttk.Entry(bar, font=(MONO, 10), width=20)
-        self._pf.pack(side="right", padx=4)
-        self._pf.bind("<KeyRelease>", self._filter_procs)
-
-        cols = ("pid", "name", "cpu", "ram")
-        self._ptree = ttk.Treeview(f, columns=cols, show="headings")
-        self._ptree.heading("pid",  text="PID")
-        self._ptree.heading("name", text="Process Name")
-        self._ptree.heading("cpu",  text="CPU (s)")
-        self._ptree.heading("ram",  text="RAM (MB)")
-        self._ptree.column("pid",  width=70,  anchor="center")
-        self._ptree.column("name", width=220)
-        self._ptree.column("cpu",  width=90,  anchor="e")
-        self._ptree.column("ram",  width=90,  anchor="e")
-        psb = ttk.Scrollbar(f, orient="vertical", command=self._ptree.yview)
-        self._ptree.configure(yscrollcommand=psb.set)
-        self._ptree.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=4)
-        psb.pack(side="left", fill="y", pady=4, padx=(2, 8))
-
-    def _build_files_tab(self):
-        f = tk.Frame(self._nb, bg=C["base"])
-        self._nb.add(f, text="  Files  ")
-        pb = tk.Frame(f, bg=C["base"])
-        pb.pack(fill="x", padx=8, pady=6)
-        tk.Label(pb, text="Path:", bg=C["base"], fg=C["subtext"]).pack(side="left", padx=(0, 4))
-        self._path_e = ttk.Entry(pb, font=(MONO, 10))
-        self._path_e.pack(side="left", fill="x", expand=True)
-        self._path_e.bind("<Return>", self._browse)
-        ttk.Button(pb, text="Go",   command=self._browse).pack(side="left", padx=4)
-        ttk.Button(pb, text="↑ Up", command=self._go_up).pack(side="left", padx=4)
-
-        ab = tk.Frame(f, bg=C["base"])
-        ab.pack(fill="x", padx=8, pady=(0, 4))
-        ttk.Button(ab, text="⬇ Download", command=self._download).pack(side="left", padx=(0, 4))
-        ttk.Button(ab, text="⬆ Upload", command=self._upload).pack(side="left")
-
-        cols = ("name", "type", "size", "modified")
-        self._ftree = ttk.Treeview(f, columns=cols, show="headings")
-        self._ftree.heading("name",     text="Name")
-        self._ftree.heading("type",     text="Type")
-        self._ftree.heading("size",     text="Size")
-        self._ftree.heading("modified", text="Modified")
-        self._ftree.column("name",     width=280)
-        self._ftree.column("type",     width=55,  anchor="center")
-        self._ftree.column("size",     width=90,  anchor="e")
-        self._ftree.column("modified", width=160, anchor="center")
-        fsb = ttk.Scrollbar(f, orient="vertical", command=self._ftree.yview)
-        self._ftree.configure(yscrollcommand=fsb.set)
-        self._ftree.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=4)
-        fsb.pack(side="left", fill="y", pady=4, padx=(2, 8))
-        self._ftree.bind("<Double-1>", self._file_dbl)
-        self._ftree.tag_configure("dir",  foreground=C["yellow"])
-        self._ftree.tag_configure("file", foreground=C["text"])
-
-    def _build_sysinfo_tab(self):
-        f = tk.Frame(self._nb, bg=C["base"])
-        self._nb.add(f, text="  Sysinfo  ")
-        self._sysinfo_tab_frame = f
-        bar = tk.Frame(f, bg=C["base"])
-        bar.pack(anchor="w", padx=8, pady=8)
-        ttk.Button(bar, text="⟳  Refresh", command=self._refresh_sysinfo).pack(side="left", padx=(0, 6))
-        ttk.Button(bar, text="🛡️  Verify Integrity", command=self._cmd_verify_integrity).pack(side="left")
-        self._si_text = scrolledtext.ScrolledText(
-            f, bg=C["mantle"], fg=C["text"], font=(MONO, 10), state="disabled", wrap="word",
-            relief="flat", bd=0, padx=16, pady=10)
-        self._si_text.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-        self._si_text.tag_config("key", foreground=C["blue"], font=(MONO, 10, "bold"))
-        self._si_text.tag_config("val", foreground=C["text"])
-        self._si_text.tag_config("head", foreground=C["mauve"], font=(MONO, 11, "bold"))
-        self._si_text.tag_config("admin_y", foreground=C["yellow"], font=(MONO, 10, "bold"))
-        self._si_text.tag_config("admin_n", foreground=C["subtext"])
-        self._si_text.tag_config("tamper", foreground=C["red"], font=(MONO, 10, "bold"))
-        self._si_text.tag_config("verified", foreground=C["green"], font=(MONO, 10, "bold"))
-
-    # ── Endpoint Defense Tabs ────────────────────────────────
-
-    def _build_alerts_tab(self):
-        f = tk.Frame(self._nb, bg=C["base"])
-        self._nb.add(f, text="  🚨 Security Alerts  ")
-
-        bar = tk.Frame(f, bg=C["base"])
-        bar.pack(fill="x", padx=8, pady=6)
-        tk.Label(bar, text="Filter:", bg=C["base"], fg=C["subtext"]).pack(side="left", padx=(0, 4))
-        self._alert_filter = ttk.Combobox(bar, values=["ALL", "tamper", "malware", "fim", "dlp", "openedr"],
-                                          state="readonly", width=12)
-        self._alert_filter.set("ALL")
-        self._alert_filter.pack(side="left", padx=4)
-        self._alert_filter.bind("<<ComboboxSelected>>", self._render_alerts)
-
-        ttk.Button(bar, text="Clear Alerts", command=self._clear_alerts).pack(side="right", padx=4)
-        ttk.Button(bar, text="Export JSON", command=self._export_alerts).pack(side="right", padx=4)
-
-        cols = ("time", "host", "subsystem", "severity", "title", "details")
-        self._alert_tree = ttk.Treeview(f, columns=cols, show="headings", height=15)
-        self._alert_tree.heading("time",      text="Timestamp")
-        self._alert_tree.heading("host",      text="Endpoint")
-        self._alert_tree.heading("subsystem", text="Subsystem")
-        self._alert_tree.heading("severity",  text="Severity")
-        self._alert_tree.heading("title",     text="Alert Title")
-        self._alert_tree.heading("details",   text="Details")
-
-        self._alert_tree.column("time",      width=140, anchor="center")
-        self._alert_tree.column("host",      width=110, anchor="center")
-        self._alert_tree.column("subsystem", width=90,  anchor="center")
-        self._alert_tree.column("severity",  width=85,  anchor="center")
-        self._alert_tree.column("title",     width=250)
-        self._alert_tree.column("details",   width=350)
-
-        asb = ttk.Scrollbar(f, orient="vertical", command=self._alert_tree.yview)
-        self._alert_tree.configure(yscrollcommand=asb.set)
-        self._alert_tree.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=4)
-        asb.pack(side="left", fill="y", pady=4, padx=(2, 8))
-
-        self._alert_tree.tag_configure("CRITICAL", foreground=C["red"])
-        self._alert_tree.tag_configure("HIGH",     foreground=C["peach"])
-        self._alert_tree.tag_configure("MEDIUM",   foreground=C["yellow"])
-        self._alert_tree.tag_configure("INFO",     foreground=C["blue"])
-
-    def _build_malware_tab(self):
-        f = tk.Frame(self._nb, bg=C["base"])
-        self._nb.add(f, text="  ☣ Malware & Quarantine  ")
-
-        # Top scan launcher
-        sb = tk.Frame(f, bg=C["base"])
-        sb.pack(fill="x", padx=8, pady=6)
-        tk.Label(sb, text="Target Scan Path:", bg=C["base"], fg=C["subtext"]).pack(side="left", padx=(0, 4))
-        self._mal_path = ttk.Entry(sb, font=(MONO, 10), width=35)
-        self._mal_path.pack(side="left", fill="x", expand=True, padx=4)
-        ttk.Button(sb, text="🔍 Scan Path", style="Accent.TButton",
-                   command=self._cmd_scan_malware).pack(side="left", padx=4)
-
-        # Quarantine vault table
-        tk.Label(f, text="QUARANTINE VAULT (Isolated Threats)", bg=C["base"], fg=C["mauve"],
-                 font=(MONO, 10, "bold")).pack(anchor="w", padx=10, pady=(8, 2))
-
-        qb = tk.Frame(f, bg=C["base"])
-        qb.pack(fill="x", padx=8, pady=(0, 4))
-        ttk.Button(qb, text="⟳ Refresh Vault", command=self._refresh_quarantine).pack(side="left", padx=(0, 4))
-        ttk.Button(qb, text="↩ Restore Selected", style="Success.TButton",
-                   command=self._restore_quarantine).pack(side="left", padx=4)
-        ttk.Button(qb, text="☣ Quarantine File", style="Danger.TButton",
-                   command=self._quarantine_file_dialog).pack(side="left", padx=4)
-
-        cols = ("file", "orig_path", "date", "hash")
-        self._qtree = ttk.Treeview(f, columns=cols, show="headings", height=8)
-        self._qtree.heading("file",      text="Quarantine ID")
-        self._qtree.heading("orig_path", text="Original Path")
-        self._qtree.heading("date",      text="Date Quarantined")
-        self._qtree.heading("hash",      text="SHA-256")
-
-        self._qtree.column("file",      width=160)
-        self._qtree.column("orig_path", width=300)
-        self._qtree.column("date",      width=140, anchor="center")
-        self._qtree.column("hash",      width=260)
-
-        qsb = ttk.Scrollbar(f, orient="vertical", command=self._qtree.yview)
-        self._qtree.configure(yscrollcommand=qsb.set)
-        self._qtree.pack(side="top", fill="both", expand=True, padx=8, pady=4)
-        qsb.pack(side="right", fill="y", pady=4)
-
-    def _build_fim_tab(self):
-        f = tk.Frame(self._nb, bg=C["base"])
-        self._nb.add(f, text="  📁 FIM Integrity  ")
-
-        bar = tk.Frame(f, bg=C["base"])
-        bar.pack(fill="x", padx=8, pady=6)
-        ttk.Button(bar, text="✦ Init / Rebuild Baseline", style="Accent.TButton",
-                   command=self._cmd_fim_init).pack(side="left", padx=(0, 4))
-        ttk.Button(bar, text="⟳ Run Integrity Check",
-                   command=self._cmd_fim_check).pack(side="left", padx=4)
-
-        tk.Label(bar, text="Add Path:", bg=C["base"], fg=C["subtext"]).pack(side="left", padx=(16, 4))
-        self._fim_path_entry = ttk.Entry(bar, font=(MONO, 10), width=28)
-        self._fim_path_entry.pack(side="left", padx=4)
-        ttk.Button(bar, text="+ Add", command=self._cmd_fim_add_path).pack(side="left", padx=4)
-
-        self._fim_log = scrolledtext.ScrolledText(
-            f, bg=C["mantle"], fg=C["text"], font=(MONO, 10), state="disabled", wrap="word",
-            relief="flat", bd=0, padx=12, pady=8)
-        self._fim_log.pack(fill="both", expand=True, padx=8, pady=4)
-        self._fim_log.tag_config("MODIFIED", foreground=C["red"], font=(MONO, 10, "bold"))
-        self._fim_log.tag_config("DELETED",  foreground=C["peach"], font=(MONO, 10, "bold"))
-        self._fim_log.tag_config("ADDED",    foreground=C["green"])
-        self._fim_log.tag_config("INFO",     foreground=C["blue"])
-
-    def _build_dlp_tab(self):
-        f = tk.Frame(self._nb, bg=C["base"])
-        self._nb.add(f, text="  🛡️ DLP (Data Loss Prevention)  ")
-
-        bar = tk.Frame(f, bg=C["base"])
-        bar.pack(fill="x", padx=8, pady=6)
-        tk.Label(bar, text="Scan Endpoint Path / Buffer:", bg=C["base"], fg=C["subtext"]).pack(side="left", padx=(0, 4))
-        self._dlp_input = ttk.Entry(bar, font=(MONO, 10), width=35)
-        self._dlp_input.pack(side="left", fill="x", expand=True, padx=4)
-        ttk.Button(bar, text="🛡️ Inspect Sensitive Data", style="Accent.TButton",
-                   command=self._cmd_dlp_scan).pack(side="left", padx=4)
-
-        self._dlp_text = scrolledtext.ScrolledText(
-            f, bg=C["mantle"], fg=C["text"], font=(MONO, 10), state="disabled", wrap="word",
-            relief="flat", bd=0, padx=12, pady=8)
-        self._dlp_text.pack(fill="both", expand=True, padx=8, pady=4)
-        self._dlp_text.tag_config("CRITICAL", foreground=C["red"], font=(MONO, 10, "bold"))
-        self._dlp_text.tag_config("HIGH",     foreground=C["peach"], font=(MONO, 10, "bold"))
-        self._dlp_text.tag_config("preview",  foreground=C["yellow"])
-
-    def _build_openedr_tab(self):
-        f = tk.Frame(self._nb, bg=C["base"])
-        self._nb.add(f, text="  ⚡ OpenEDR & Telemetry  ")
-
-        # Status row
-        bar = tk.Frame(f, bg=C["base"])
-        bar.pack(fill="x", padx=8, pady=6)
-        ttk.Button(bar, text="⟳ Refresh Service Status", command=self._cmd_openedr_status).pack(side="left", padx=(0, 4))
-        ttk.Button(bar, text="📥 Stream Telemetry", command=self._cmd_openedr_fetch_telemetry).pack(side="left", padx=4)
-        ttk.Button(bar, text="⚙️ Install OpenEDR", command=self._cmd_openedr_install).pack(side="left", padx=4)
-
-        # Emergency containment button
-        ttk.Button(bar, text="⚠️ ISOLATE HOST", style="Danger.TButton",
-                   command=lambda: self._cmd_host_isolation(True)).pack(side="right", padx=4)
-        ttk.Button(bar, text="🌐 Restore Network", style="Success.TButton",
-                   command=lambda: self._cmd_host_isolation(False)).pack(side="right", padx=4)
-
-        self._edr_status_lbl = tk.Label(
-            f, text="Service Status: Unknown  |  Kernel Filter: Unknown  |  Telemetry Log: None",
-            bg=C["surface0"], fg=C["teal"], font=(MONO, 10, "bold"), padx=10, pady=6)
-        self._edr_status_lbl.pack(fill="x", padx=8, pady=(2, 4))
-
-        self._edr_log = scrolledtext.ScrolledText(
-            f, bg=C["mantle"], fg=C["text"], font=(MONO, 10), state="disabled", wrap="none",
-            relief="flat", bd=0, padx=12, pady=8)
-        self._edr_log.pack(fill="both", expand=True, padx=8, pady=4)
-        self._edr_log.tag_config("event", foreground=C["lavender"])
-        self._edr_log.tag_config("info",  foreground=C["blue"])
-
-    # ════════════════════════════════════════════════════════════
-    #  Event Dispatcher from EDRServer
-    # ════════════════════════════════════════════════════════════
-
-    def _on_server_event(self, ev: str, data: Any):
-        if ev in ("security_event", "telemetry"):
-            self._gui_event_queue.put((ev, data))
-        else:
-            self.root.after(0, self._dispatch_server_event, ev, data)
-
-    def _flush_gui_events(self):
+    async def handle_login(self, request: web.Request) -> web.Response:
         try:
-            alerts_batch = []
-            edr_chunks = []
-            fim_chunks = []
-            dlp_chunks = []
-            count = 0
-            while not self._gui_event_queue.empty() and count < 100:
-                ev, data = self._gui_event_queue.get_nowait()
-                count += 1
-                if ev == "security_event":
-                    agent, msg = data
-                    alerts_batch.append((agent, msg))
-                elif ev == "telemetry":
-                    agent, msg = data
-                    events = msg.get("events", [])
-                    edr_chunks.append(f"--- Telemetry Batch ({len(events)} events) from {msg.get('host')} ---\n")
-                    for tev in events:
-                        edr_chunks.append(json.dumps(tev) + "\n")
-
-            if alerts_batch:
-                for agent, msg in alerts_batch:
-                    ts = msg.get("timestamp", datetime.now().strftime("%H:%M:%S"))[:19].replace("T", " ")
-                    host = msg.get("host", "Unknown")
-                    sub = msg.get("subsystem", "general").upper()
-                    sev = msg.get("severity", "INFO").upper()
-                    title = msg.get("title", "")
-                    details = str(msg.get("details", ""))
-
-                    self._alert_tree.insert("", 0, values=(ts, host, sub, sev, title, details), tags=(sev,))
-                    self._log(f"[{sub} ALERT - {sev}] {host}: {title}", "error" if sev == "CRITICAL" else "warn")
-
-                    if sub == "FIM":
-                        fim_chunks.append(f"[{ts}] [{sev}] {title}\n  Details: {details}\n")
-                    elif sub == "DLP":
-                        dlp_chunks.append(f"[{ts}] [{sev}] {title}\n  Details: {details}\n")
-
-                self._lbl_alert_badge.config(text=f"Alerts: {len(self.server._security_events)}")
-
-            if edr_chunks:
-                self._append_edr_log("".join(edr_chunks))
-            if fim_chunks:
-                self._append_fim_log("".join(fim_chunks))
-            if dlp_chunks:
-                self._append_dlp_log("".join(dlp_chunks))
+            body = await request.json()
         except Exception:
-            pass
-        finally:
-            try:
-                self.root.after(100, self._flush_gui_events)
-            except Exception:
-                pass
+            return web.json_response({"status": "error", "error": "Invalid JSON"}, status=400)
 
-    def _dispatch_server_event(self, ev: str, data: Any):
-        if ev == "connect":
-            agent: Agent = data
-            admin_tag = " ★" if (agent.is_admin and agent.os_type == "windows") else ""
-            root_tag  = " ⚡" if (agent.is_admin and agent.os_type == "linux") else ""
-            priv_tag  = admin_tag or root_tag
+        username = body.get("username", "admin")
+        password = body.get("password") or body.get("psk") or body.get("token") or body.get("secret") or ""
+        expected_psk = self.psk or (self.server._psk.decode() if self.server and self.server._psk else "")
 
-            iid = self._atree.insert("", "end", values=(
-                agent.hostname,
-                agent.username.split("\\")[-1].split("/")[-1] + priv_tag,
-                agent.ip,
-            ))
-            self._tree_map[agent.id] = iid
-            self._log(f"[+] Sensor Connected: {agent.username}@{agent.hostname} ({agent.ip}) [{agent.os}]", "success")
+        if not expected_psk or password == expected_psk:
+            token = create_jwt_token({"sub": username, "role": "admin"}, secret=expected_psk or "edr_secret")
+            AUDIT.info("WEB_AUTH_LOGIN_SUCCESS  user=%s  ip=%s", username, request.remote)
+            return web.json_response({
+                "status": "ok",
+                "token": token,
+                "expires_in": 86400,
+                "user": username
+            })
 
-        elif ev == "disconnect":
-            agent: Agent = data
-            iid = self._tree_map.pop(agent.id, None)
-            if iid:
-                try: self._atree.delete(iid)
-                except tk.TclError: pass
-            if self._sel_id == agent.id:
-                self._sel_id = None
-                self._lbl_info.config(text="  Agent disconnected", fg=C["red"])
-                self._lbl_admin.config(text="")
-            self._log(f"[-] Disconnected: {agent.username}@{agent.hostname}", "warn")
+        AUDIT.warning("WEB_AUTH_LOGIN_FAILED  user=%s  ip=%s", username, request.remote)
+        return web.json_response({"status": "error", "error": "Invalid administrator credentials"}, status=401)
 
-        self._lbl_count.config(text=f"Sensors: {len(self.server.agents())}")
+    async def handle_get_agents(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return web.json_response({"status": "error", "error": "Unauthorized"}, status=401)
 
-    def _render_alerts(self, _=None):
-        flt = self._alert_filter.get().lower()
-        for iid in self._alert_tree.get_children():
-            self._alert_tree.delete(iid)
-        for ev in reversed(self.server._security_events):
-            sub = ev.get("subsystem", "general").lower()
-            if flt != "all" and sub != flt:
-                continue
-            ts = ev.get("timestamp", "")[:19].replace("T", " ")
-            sev = ev.get("severity", "INFO").upper()
-            self._alert_tree.insert("", "end", values=(
-                ts, ev.get("host", ""), sub.upper(), sev, ev.get("title", ""), str(ev.get("details", ""))
-            ), tags=(sev,))
+        agents = self.server.agents()
+        agent_list = []
+        for a in agents:
+            agent_list.append({
+                "id": a.id,
+                "hostname": a.hostname,
+                "username": a.username,
+                "os": a.os,
+                "os_type": a.os_type,
+                "arch": a.arch,
+                "ip": a.ip,
+                "is_admin": a.is_admin,
+                "ps_ver": a.ps_ver,
+                "defense_capabilities": a.defense_caps,
+                "attestation_status": a.attestation_status,
+                "attestation_details": getattr(a, "attestation_details", {}),
+                "connected_at": a.connected_at.isoformat() if hasattr(a.connected_at, "isoformat") else str(a.connected_at),
+                "last_seen": a.last_seen.isoformat() if hasattr(a.last_seen, "isoformat") else str(a.last_seen)
+            })
+        return web.json_response({"status": "ok", "count": len(agent_list), "agents": agent_list})
 
-    def _clear_alerts(self):
+    async def handle_get_alerts(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return web.json_response({"status": "error", "error": "Unauthorized"}, status=401)
+
+        sev = request.query.get("severity", "").strip().upper()
+        sub = request.query.get("subsystem", "").strip().lower()
+        aid = request.query.get("agent_id", "").strip()
+        try:
+            limit = min(int(request.query.get("limit", 100)), 1000)
+        except ValueError:
+            limit = 100
+
         with self.server._lock:
-            self.server._security_events.clear()
-        self._render_alerts()
-        self._lbl_alert_badge.config(text="Alerts: 0")
+            raw = list(self.server._security_events)
 
-    def _export_alerts(self):
-        f = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON files", "*.json")])
-        if not f:
-            return
-        with open(f, "w") as fh:
-            json.dump(list(self.server._security_events), fh, indent=2)
-        messagebox.showinfo("Exported", f"Saved {len(self.server._security_events)} alerts to {f}")
-
-    # ── Agent Selection & Prompt Helpers ─────────────────────
-
-    def _on_select(self, _=None):
-        sel = self._atree.selection()
-        if not sel:
-            return
-        iid = sel[0]
-        for aid, tiid in list(self._tree_map.items()):
-            if tiid == iid:
-                self._sel_id = aid
-                a = self.server.get(aid)
-                if a:
-                    ts = a.connected_at.strftime("%H:%M:%S")
-                    caps = ", ".join(a.defense_caps) if a.defense_caps else "standard"
-                    self._lbl_info.config(
-                        fg=C["subtext"],
-                        text=f"  {a.username}@{a.hostname} · {a.ip} · {a.os} · Defense: [{caps}] · since {ts}")
-                    if a.os_type == "linux":
-                        self._lbl_ps.config(text=f"$ {a.hostname} >")
-                        self._lbl_admin.config(text="  ⚡ ROOT  " if a.is_admin else "")
-                        if not self._path_e.get(): self._path_e.insert(0, "/")
-                    else:
-                        self._lbl_ps.config(text=f"PS {a.hostname} >")
-                        self._lbl_admin.config(text="  ★ ADMIN  " if a.is_admin else "")
-                        if not self._path_e.get(): self._path_e.insert(0, "C:\\")
+        alerts = []
+        for item in reversed(raw):
+            if sev and str(item.get("severity", "")).upper() != sev:
+                continue
+            if sub and str(item.get("subsystem", "")).lower() != sub:
+                continue
+            if aid and str(item.get("agent_id", "")) != aid:
+                continue
+            alerts.append(item)
+            if len(alerts) >= limit:
                 break
+        return web.json_response({"status": "ok", "total": len(alerts), "alerts": alerts})
 
-    def _get_agent(self, warn: bool = True) -> Optional[Agent]:
-        if not self._sel_id:
-            if warn: messagebox.showwarning("No Sensor", "Select an endpoint sensor first.")
-            return None
-        a = self.server.get(self._sel_id)
-        if not a:
-            if warn: messagebox.showerror("Disconnected", "Selected endpoint is no longer connected.")
-            return None
-        return a
+    async def handle_command_dispatch(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return web.json_response({"status": "error", "error": "Unauthorized"}, status=401)
 
-    def _log(self, text: str, tag: str = "output"):
-        self._term.config(state="normal")
-        ts = datetime.now().strftime("%H:%M:%S")
-        self._term.insert("end", f"[{ts}] ", "ts")
-        self._term.insert("end", text + "\n", tag)
-        self._term.see("end")
-        self._term.config(state="disabled")
-        self._lbl_status.config(text=text[:80])
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "error": "Invalid JSON body"}, status=400)
 
-    # ── Terminal Command Dispatch ────────────────────────────
+        agent_id = body.get("agent_id")
+        command = body.get("command")
+        args = body.get("args")
+        timeout = float(body.get("timeout", 30))
 
-    def _run_shell(self, _=None):
-        a = self._get_agent()
-        if not a: return
-        cmd = self._entry.get().strip()
-        if not cmd: return
-        self._cmd_history.append(cmd)
-        self._hist_idx = len(self._cmd_history)
-        self._entry.delete(0, "end")
-        prompt_sym = "$" if a.os_type == "linux" else "PS"
-        self._log(f"{prompt_sym} > {cmd}", "prompt")
+        if not command:
+            return web.json_response({"status": "error", "error": "Missing 'command' parameter"}, status=400)
 
-        # Intercept cd command to update agent working directory and browser persistently
-        if cmd.strip().lower() == "cd" or cmd.strip().lower().startswith("cd "):
-            target_dir = cmd.strip()[2:].strip() or ("/" if a.os_type == "linux" else "C:\\")
-            self.server.audit_cmd(a, "cd", target_dir)
-            def run_cd():
-                mid, _ = a.send_command("cd", target_dir)
-                resp = a.wait_response(mid, timeout=15)
-                if resp:
-                    out = (resp.get("output") or "").rstrip()
-                    tag = "output" if resp.get("status") == "ok" else "error"
-                    self.root.after(0, self._log, out or target_dir, tag)
-                    if resp.get("status") == "ok":
-                        self.root.after(0, self._path_e.delete, 0, "end")
-                        self.root.after(0, self._path_e.insert, 0, out or target_dir)
-                        self.root.after(0, self._browse)
-                else:
-                    self.root.after(0, self._log, "Timeout waiting for response", "error")
-            threading.Thread(target=run_cd, daemon=True).start()
-            return
-
-        self.server.audit_cmd(a, "shell", cmd)
-
-        def run():
-            mid, _ = a.send_command("shell", cmd)
-            resp = a.wait_response(mid, timeout=30)
-            if resp:
-                out = (resp.get("output") or "").rstrip()
-                tag = "output" if resp.get("status") == "ok" else "error"
-                self.root.after(0, self._log, out or "(no output)", tag)
-            else:
-                self.root.after(0, self._log, "Timeout waiting for response", "error")
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _hist_up(self, _):
-        if self._cmd_history and self._hist_idx > 0:
-            self._hist_idx -= 1
-            self._entry.delete(0, "end")
-            self._entry.insert(0, self._cmd_history[self._hist_idx])
-
-    def _hist_down(self, _):
-        if self._hist_idx < len(self._cmd_history) - 1:
-            self._hist_idx += 1
-            self._entry.delete(0, "end")
-            self._entry.insert(0, self._cmd_history[self._hist_idx])
+        agent = None
+        if agent_id:
+            agent = self.server.get(agent_id)
+            if not agent:
+                return web.json_response({"status": "error", "error": f"Agent '{agent_id}' not found"}, status=404)
         else:
-            self._hist_idx = len(self._cmd_history)
-            self._entry.delete(0, "end")
-
-    # ── Process Management ───────────────────────────────────
-
-    def _refresh_procs(self):
-        a = self._get_agent()
-        if not a: return
-        self._log("Fetching process list…", "dim")
-        self.server.audit_cmd(a, "ps")
-
-        def run():
-            mid, _ = a.send_command("ps")
-            resp = a.wait_response(mid, timeout=20)
-            if resp and resp.get("status") == "ok":
-                try:
-                    procs = json.loads(resp["output"])
-                    if isinstance(procs, dict): procs = [procs]
-                    self.root.after(0, self._fill_procs, procs)
-                except Exception as e:
-                    self.root.after(0, self._log, f"Parse error: {e}", "error")
+            active = self.server.agents()
+            if len(active) == 1:
+                agent = active[0]
+            elif not active:
+                return web.json_response({"status": "error", "error": "No active agents connected"}, status=404)
             else:
-                self.root.after(0, self._log, "Failed to get process list", "error")
+                return web.json_response({"status": "error", "error": "Multiple agents active; please specify 'agent_id'"}, status=400)
 
-        threading.Thread(target=run, daemon=True).start()
+        self.server.audit_cmd(agent, command, str(args) if args is not None else "")
+        mid, _ = agent.send_command(command, args)
+        loop = asyncio.get_event_loop()
+        resp = await loop.run_in_executor(None, agent.wait_response, mid, timeout)
 
-    def _fill_procs(self, procs: List):
-        self._proc_cache = procs
-        self._render_procs(procs)
-        self._log(f"Process list: {len(procs)} entries", "success")
+        if resp is None:
+            return web.json_response({
+                "status": "error",
+                "agent_id": agent.id,
+                "command": command,
+                "error": f"Command timed out after {timeout} seconds"
+            }, status=504)
 
-    def _render_procs(self, procs: List):
-        for iid in self._ptree.get_children(): self._ptree.delete(iid)
-        for p in procs:
-            cpu = p.get("CPU", 0) or 0
-            ram = p.get("RAM", 0) or 0
-            self._ptree.insert("", "end", values=(
-                p.get("Id", ""),
-                p.get("ProcessName", ""),
-                f"{float(cpu):.1f}",
-                f"{float(ram):.1f}",
-            ))
+        return web.json_response({
+            "status": "ok",
+            "agent_id": agent.id,
+            "hostname": agent.hostname,
+            "command": command,
+            "response": resp
+        })
 
-    def _filter_procs(self, _=None):
-        q = self._pf.get().lower()
-        self._render_procs([p for p in self._proc_cache if q in p.get("ProcessName", "").lower()])
+    async def handle_get_quarantine(self, request: web.Request) -> web.Response:
+        if not self._check_auth(request):
+            return web.json_response({"status": "error", "error": "Unauthorized"}, status=401)
 
-    def _kill_proc(self):
-        a = self._get_agent()
-        if not a: return
-        sel = self._ptree.selection()
-        if not sel:
-            messagebox.showwarning("No Selection", "Select a process first.")
-            return
-        vals = self._ptree.item(sel[0])["values"]
-        pid, name = vals[0], vals[1]
-        if not messagebox.askyesno("Confirm", f"Kill  '{name}'  (PID {pid})?"):
-            return
-        self.server.audit_cmd(a, "kill", str(pid))
-
-        def run():
-            mid, _ = a.send_command("kill", str(pid))
-            resp = a.wait_response(mid, timeout=10)
-            if resp:
-                tag = "success" if resp.get("status") == "ok" else "error"
-                self.root.after(0, self._log, resp.get("output", ""), tag)
-                if resp.get("status") == "ok":
-                    self.root.after(0, self._refresh_procs)
-            else:
-                self.root.after(0, self._log, "Kill timed out", "error")
-
-        threading.Thread(target=run, daemon=True).start()
-
-    # ── Remote Filesystem & In-Band Protection ────────────────
-
-    @staticmethod
-    def _strip_icon(s: str) -> str:
-        for prefix in ("📁  ", "📄  "):
-            if s.startswith(prefix):
-                return s[len(prefix):]
-        return s
-
-    @staticmethod
-    def _win_parent(path: str) -> str:
-        p = path.rstrip("\\")
-        if not p: return path
-        idx = p.rfind("\\")
-        if idx < 0: return path
-        if idx == 2 and len(p) > 2 and p[1] == ":": return p[:2] + "\\"
-        return p[:idx] if idx > 0 else path
-
-    def _browse(self, _=None):
-        a = self._get_agent()
-        if not a: return
-        path = self._path_e.get().strip()
-
-        def run():
-            mid, _ = a.send_command("ls", path)
-            resp = a.wait_response(mid, timeout=15)
-            if resp and resp.get("status") == "ok":
-                try:
-                    items = json.loads(resp["output"])
-                    if not items: items = []
-                    elif isinstance(items, dict): items = [items]
-                    self.root.after(0, self._fill_files, items, path)
-                except Exception as e:
-                    self.root.after(0, self._log, f"Parse error: {e}", "error")
-            else:
-                err = (resp or {}).get("output", "Timeout")
-                self.root.after(0, self._log, f"Browse error: {err}", "error")
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _fill_files(self, items: List, path: str):
-        for iid in self._ftree.get_children(): self._ftree.delete(iid)
-        dirs  = sorted([i for i in items if i.get("Type") == "dir"], key=lambda x: x.get("Name", "").lower())
-        files = sorted([i for i in items if i.get("Type") != "dir"], key=lambda x: x.get("Name", "").lower())
-        for it in dirs:
-            self._ftree.insert("", "end", values=("📁  " + it["Name"], "DIR", "", str(it.get("LastWriteTime", ""))), tags=("dir",))
-        for it in files:
-            self._ftree.insert("", "end", values=("📄  " + it["Name"], "FILE", self._fmt_sz(it.get("Length") or 0), str(it.get("LastWriteTime", ""))), tags=("file",))
-        self._path_e.delete(0, "end")
-        self._path_e.insert(0, path)
-
-    @staticmethod
-    def _fmt_sz(n) -> str:
-        try: n = int(n)
-        except (TypeError, ValueError): return ""
-        if n < 1024:    return f"{n} B"
-        if n < 1024**2: return f"{n/1024:.1f} KB"
-        if n < 1024**3: return f"{n/1024**2:.1f} MB"
-        return f"{n/1024**3:.2f} GB"
-
-    def _file_dbl(self, _):
-        sel = self._ftree.selection()
-        if not sel: return
-        vals = self._ftree.item(sel[0])["values"]
-        name, ftype = self._strip_icon(str(vals[0])), vals[1]
-        if ftype == "DIR":
-            a = self._get_agent(warn=False)
-            cur = self._path_e.get()
-            if a and a.os_type == "linux":
-                cur = cur.rstrip("/")
-                new_path = f"{cur}/{name}" if cur != "/" else f"/{name}"
-            else:
-                cur = cur.rstrip("\\")
-                new_path = cur + "\\" + name
-            self._path_e.delete(0, "end")
-            self._path_e.insert(0, new_path)
-            self._browse()
-
-    def _go_up(self):
-        a = self._get_agent(warn=False)
-        current = self._path_e.get()
-        if a and a.os_type == "linux":
-            parent = current.rstrip("/")
-            if "/" in parent:
-                parent = parent.rsplit("/", 1)[0] or "/"
-            else: parent = "/"
+        agent_id = request.query.get("agent_id")
+        targets = []
+        if agent_id:
+            a = self.server.get(agent_id)
+            if not a:
+                return web.json_response({"status": "error", "error": f"Agent '{agent_id}' not found"}, status=404)
+            targets = [a]
         else:
-            parent = self._win_parent(current)
-        self._path_e.delete(0, "end")
-        self._path_e.insert(0, parent)
-        self._browse()
+            targets = self.server.agents()
 
-    def _download(self):
-        a = self._get_agent()
-        if not a: return
-        sel = self._ftree.selection()
-        if not sel:
-            messagebox.showwarning("No Selection", "Select a file to download.")
-            return
-        vals = self._ftree.item(sel[0])["values"]
-        name = self._strip_icon(str(vals[0]))
-        ftype = vals[1] if len(vals) > 1 else ""
-        if ftype == "DIR":
-            messagebox.showwarning("Invalid Selection", "Cannot download a directory. Please select a file.")
-            return
-        cur = self._path_e.get()
-        if a.os_type == "linux":
-            cur = cur.rstrip("/")
-            remote = f"{cur}/{name}" if cur != "/" else f"/{name}"
-        else:
-            remote = cur.rstrip("\\") + "\\" + name
-
-        save = filedialog.asksaveasfilename(initialfile=name)
-        if not save: return
-        self.server.audit_cmd(a, "download", remote)
-
-        def run():
-            self.root.after(0, self._log, f"Downloading  {remote} …", "info")
-            CHUNK_SIZE = 512 * 1024
-            offset = 0
-            use_chunked = True
-
-            # Probe chunked transfer with offset 0
-            mid, _ = a.send_command("download_chunk", path=remote, offset=0, chunk_size=CHUNK_SIZE)
-            resp = a.wait_response(mid, timeout=30)
-
-            if resp and resp.get("status") == "ok" and "data" in resp:
-                try:
-                    total_size = resp.get("total_size", 0)
-                    with open(save, "wb") as fh:
-                        while True:
-                            chunk_bytes = base64.b64decode(resp.get("data", ""))
-                            fh.write(chunk_bytes)
-                            offset += len(chunk_bytes)
-                            total_size = resp.get("total_size") or total_size or offset
-                            pct = int((offset / total_size) * 100) if total_size > 0 else 100
-                            self.root.after(0, self._log, f"Downloading {name} ({offset:,} / {total_size:,} bytes - {pct}%)", "info")
-
-                            if resp.get("eof") or (total_size > 0 and offset >= total_size) or len(chunk_bytes) == 0:
-                                break
-
-                            # Request next chunk
-                            mid, _ = a.send_command("download_chunk", path=remote, offset=offset, chunk_size=CHUNK_SIZE)
-                            resp = a.wait_response(mid, timeout=30)
-                            if not resp or resp.get("status") != "ok":
-                                raise RuntimeError((resp or {}).get("output", "Chunk read failed or timed out"))
-
-                    self.root.after(0, self._log, f"Saved {offset:,} bytes  →  {save}", "success")
-                    violations = DLPEngine.scan_file(save)
-                    if violations:
-                        self.root.after(0, self._log, f"⚠️ [DLP Alert] Downloaded file contains sensitive data: {violations[0]['rule']}", "warn")
-                    return
-                except Exception as e:
-                    self.root.after(0, self._log, f"Chunked download error: {e}, attempting single-frame fallback...", "warn")
-
-            # Fallback to single-frame transfer
-            mid, _ = a.send_command("download", remote)
-            resp = a.wait_response(mid, timeout=120)
-            if resp and resp.get("status") == "ok":
-                try:
-                    data = base64.b64decode(resp["output"])
-                    with open(save, "wb") as fh: fh.write(data)
-                    self.root.after(0, self._log, f"Saved {len(data):,} bytes  →  {save}", "success")
-                    violations = DLPEngine.scan_file(save)
-                    if violations:
-                        self.root.after(0, self._log, f"⚠️ [DLP Alert] Downloaded file contains sensitive data: {violations[0]['rule']}", "warn")
-                except Exception as e:
-                    self.root.after(0, self._log, f"Save error: {e}", "error")
-            else:
-                err = (resp or {}).get("output", "Timeout")
-                self.root.after(0, self._log, f"Download failed: {err}", "error")
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _upload(self):
-        a = self._get_agent()
-        if not a: return
-        local = filedialog.askopenfilename()
-        if not local: return
-        fname = os.path.basename(local)
-
-        # Server-side DLP verification before upload
-        violations = DLPEngine.scan_file(local)
-        if violations:
-            msg = f"DLP WARNING: File '{fname}' contains sensitive content ({violations[0]['rule']}).\nProceed with upload anyway?"
-            if not messagebox.askyesno("DLP Warning", msg):
-                return
-
-        cur = self._path_e.get()
-        if a.os_type == "linux":
-            cur = cur.rstrip("/")
-            remote = f"{cur}/{fname}" if cur != "/" else f"/{fname}"
-        else:
-            remote = cur.rstrip("\\") + "\\" + fname
-
-        self.server.audit_cmd(a, "upload", remote)
-
-        def run():
-            self.root.after(0, self._log, f"Uploading  {fname}  →  {remote} …", "info")
-            CHUNK_SIZE = 512 * 1024
-            file_size = os.path.getsize(local)
-
-            # Use chunked transfer for files > CHUNK_SIZE
-            if file_size > CHUNK_SIZE:
-                try:
-                    with open(local, "rb") as fh:
-                        offset = 0
-                        first_chunk = True
-                        while offset < file_size:
-                            chunk_data = fh.read(CHUNK_SIZE)
-                            is_eof = (offset + len(chunk_data) >= file_size)
-                            b64 = base64.b64encode(chunk_data).decode()
-
-                            mid, _ = a.send_command("upload_chunk", path=remote, offset=offset, data=b64, total_size=file_size, eof=is_eof)
-                            resp = a.wait_response(mid, timeout=45)
-
-                            if not resp or resp.get("status") != "ok":
-                                if first_chunk:
-                                    raise NotImplementedError("Agent does not support upload_chunk")
-                                raise RuntimeError((resp or {}).get("output", "Upload chunk failed"))
-
-                            offset += len(chunk_data)
-                            first_chunk = False
-                            pct = int((offset / file_size) * 100)
-                            self.root.after(0, self._log, f"Uploading {fname} ({offset:,} / {file_size:,} bytes - {pct}%)", "info")
-
-                    self.root.after(0, self._log, f"Uploaded {file_size:,} bytes to {remote}", "success")
-                    self.root.after(0, self._browse)
-                    return
-                except NotImplementedError:
-                    self.root.after(0, self._log, "Agent lacks upload_chunk, falling back to standard upload...", "dim")
-                except Exception as e:
-                    self.root.after(0, self._log, f"Chunked upload failed: {e}", "error")
-                    return
-
-            # Single-shot upload fallback
-            try:
-                with open(local, "rb") as fh:
-                    b64 = base64.b64encode(fh.read()).decode()
-                mid, _ = a.send_command("upload", path=remote, data=b64)
-                resp = a.wait_response(mid, timeout=120)
-                if resp and resp.get("status") == "ok":
-                    self.root.after(0, self._log, resp.get("output", "Uploaded"), "success")
-                    self.root.after(0, self._browse)
-                else:
-                    err = (resp or {}).get("output", "Timeout")
-                    self.root.after(0, self._log, f"Upload failed: {err}", "error")
-            except Exception as e:
-                self.root.after(0, self._log, f"Upload error: {e}", "error")
-
-        threading.Thread(target=run, daemon=True).start()
-
-    # ── Sysinfo ──────────────────────────────────────────────
-
-    def _cmd_sysinfo(self):
-        self._refresh_sysinfo()
-        if self._sysinfo_tab_frame: self._nb.select(self._sysinfo_tab_frame)
-
-    def _refresh_sysinfo(self):
-        a = self._get_agent()
-        if not a: return
-        self.server.audit_cmd(a, "sysinfo")
-
-        def run():
-            mid, _ = a.send_command("sysinfo")
-            resp = a.wait_response(mid, timeout=20)
-            if resp and resp.get("status") == "ok":
-                try:
-                    info = json.loads(resp["output"])
-                    self.root.after(0, self._render_sysinfo, info)
-                except Exception as e:
-                    self.root.after(0, self._log, f"Parse error: {e}", "error")
-            else:
-                self.root.after(0, self._log, "Sysinfo request failed", "error")
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _render_sysinfo(self, info: dict):
-        t = self._si_text
-        t.config(state="normal")
-        t.delete("1.0", "end")
-
-        def row(label: str, value: str, val_tag: str = "val"):
-            t.insert("end", f"  {label:<22}", "key")
-            t.insert("end", f"{value}\n", val_tag)
-
-        t.insert("end", "\n  ENDPOINT INFORMATION & DEFENSE TELEMETRY\n", "head")
-        t.insert("end", "  " + "─" * 54 + "\n\n")
-        row("Hostname",     info.get("hostname", "N/A"))
-        row("Username",     info.get("username", "N/A"))
-        row("OS",           info.get("os",       "N/A"))
-        row("Architecture", info.get("arch",     "N/A"))
-        row("RAM (GB)",     str(info.get("ram_gb", "N/A")))
-        row("Uptime",       info.get("uptime",   "N/A"))
-        row("Working Dir",  info.get("cwd",      "N/A"))
-        row("Local IP",     info.get("local_ip", "N/A"))
-
-        defense = info.get("defense", {})
-        t.insert("end", "\n  DEFENSE SUB-SYSTEMS\n", "head")
-        t.insert("end", "  " + "─" * 54 + "\n\n")
-        row("FIM Monitored",   str(defense.get("fim_monitored_paths", defense.get("fim_monitored", "N/A"))))
-        row("Quarantined Files", str(defense.get("quarantined_files", "0")))
-        row("OpenEDR Engine",    "Active (Running)" if defense.get("openedr_running") else "Inactive / Not Installed")
-
-        t.insert("end", f"\n  {'Privileges':<22}", "key")
-        if info.get("is_root") or info.get("is_admin"):
-            label = "⚡  Root" if info.get("is_root") else "★  Administrator"
-            t.insert("end", f"{label}\n", "admin_y")
-        else:
-            t.insert("end", "Standard User\n", "admin_n")
-
-        a = self._get_agent()
-        if a:
-            t.insert("end", "\n  ANTI-TAMPER & ATTESTATION\n", "head")
-            t.insert("end", "  " + "─" * 54 + "\n\n")
-            stat = a.attestation_status
-            val_tag = "verified" if "Verified" in stat else ("tamper" if "TAMPERED" in stat or "Mismatch" in stat else "admin_y")
-            row("Attestation Status", stat, val_tag)
-            if a.attestation_details:
-                row("Attested Script", a.attestation_details.get("path", "N/A"))
-                row("Agent PID", str(a.attestation_details.get("pid", "N/A")))
-                row("Code Size", f"{a.attestation_details.get('bytes_len', 0):,} bytes")
-                row("SHA-256 Digest", a.attestation_details.get("raw_sha256", "N/A")[:32] + "...")
-            row("Last Seen", a.last_seen.strftime("%Y-%m-%d %H:%M:%S"))
-
-        t.config(state="disabled")
-
-    def _cmd_verify_integrity(self):
-        a = self._get_agent()
-        if not a:
-            self._log("No agent selected", "warn")
-            return
-        self._log(f"Requesting cryptographic attestation from {a.hostname}...", "info")
-        def run():
-            ok, msg = self.server.verify_agent_attestation(a)
-            lvl = "success" if ok else "error"
-            self.root.after(0, self._log, f"Attestation [{a.hostname}]: {msg}", lvl)
-            self.root.after(0, self._refresh_sysinfo)
-        threading.Thread(target=run, daemon=True).start()
-
-    # ── Defensive Commands: Malware & Quarantine ─────────────
-
-    def _cmd_scan_malware(self):
-        a = self._get_agent()
-        if not a: return
-        target = self._mal_path.get().strip() or "."
-        self._log(f"Starting malware scan on {a.hostname}:{target}…", "info")
-
-        def run():
-            mid, _ = a.send_command("malware_scan", target)
-            resp = a.wait_response(mid, timeout=60)
-            if resp and resp.get("status") == "ok":
-                try:
-                    findings = json.loads(resp["output"])
-                    if not findings:
-                        self.root.after(0, self._log, f"✓ Scan complete: No threats found in {target}", "success")
-                    else:
-                        self.root.after(0, self._log, f"🚨 THREAT DETECTED: {len(findings)} malicious objects found!", "error")
-                        for f in findings:
-                            self.root.after(0, self._log, f"   Threat: {f.get('threat')} in {f.get('path')}", "error")
-                except Exception as e:
-                    self.root.after(0, self._log, f"Scan output parse error: {e}", "error")
-            else:
-                self.root.after(0, self._log, "Malware scan failed or timed out", "error")
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _refresh_quarantine(self):
-        a = self._get_agent()
-        if not a: return
-
-        def run():
+        loop = asyncio.get_event_loop()
+        items = []
+        for a in targets:
             mid, _ = a.send_command("quarantine_list")
-            resp = a.wait_response(mid, timeout=20)
+            resp = await loop.run_in_executor(None, a.wait_response, mid, 15)
             if resp and resp.get("status") == "ok":
                 try:
-                    items = json.loads(resp["output"])
-                    self.root.after(0, self._render_quarantine_items, items)
+                    q_items = json.loads(resp["output"])
+                    for q in q_items:
+                        items.append({
+                            "agent_id": a.id,
+                            "hostname": a.hostname,
+                            "ip": a.ip,
+                            "quarantine_file": q.get("quarantine_file", q.get("original_name", "")),
+                            "original_path": q.get("original_path", ""),
+                            "quarantine_time": q.get("quarantine_time", 0),
+                            "hash": q.get("hash", "")
+                        })
                 except Exception:
                     pass
+        return web.json_response({"status": "ok", "count": len(items), "quarantine": items})
 
-        threading.Thread(target=run, daemon=True).start()
+    async def handle_status(self, request: web.Request) -> web.Response:
+        return web.json_response({
+            "status": "ok",
+            "server": "Server-EDR",
+            "c2_host": self.server.host,
+            "c2_port": self.server.port,
+            "web_port": self.port,
+            "tls_enabled": self.tls_context is not None,
+            "active_agents": len(self.server.agents()),
+            "time": datetime.now().isoformat()
+        })
 
-    def _render_quarantine_items(self, items: List[dict]):
-        for iid in self._qtree.get_children(): self._qtree.delete(iid)
-        for it in items:
-            ts = datetime.fromtimestamp(it.get("quarantine_time", 0)).strftime("%Y-%m-%d %H:%M:%S")
-            self._qtree.insert("", "end", values=(
-                it.get("quarantine_file", it.get("original_name", "")),
-                it.get("original_path", ""),
-                ts,
-                it.get("hash", "")
-            ))
+    async def handle_ws(self, request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
 
-    def _quarantine_file_dialog(self):
-        a = self._get_agent()
-        if not a: return
-        target = self._mal_path.get().strip()
-        if not target:
-            messagebox.showwarning("Target Required", "Enter file path to quarantine in the target box.")
-            return
-        if not messagebox.askyesno("Confirm Quarantine", f"Quarantine and strip execution from '{target}' on {a.hostname}?"):
-            return
+        if not self._check_auth(request):
+            await ws.send_json({"type": "error", "error": "Unauthorized - supply ?token= or ?psk="})
+            await ws.close(code=4001, message=b"Unauthorized")
+            return ws
 
-        def run():
-            mid, _ = a.send_command("quarantine", target)
-            resp = a.wait_response(mid, timeout=20)
-            if resp and resp.get("status") == "ok":
-                self.root.after(0, self._log, f"✓ Quarantined {target}", "success")
-                self.root.after(0, self._refresh_quarantine)
-            else:
-                err = (resp or {}).get("output", "Failed")
-                self.root.after(0, self._log, f"Quarantine error: {err}", "error")
+        self._ws_clients.add(ws)
+        await ws.send_json({
+            "type": "init",
+            "c2_port": self.server.port,
+            "web_port": self.port,
+            "agent_count": len(self.server.agents()),
+            "timestamp": datetime.now().isoformat()
+        })
 
-        threading.Thread(target=run, daemon=True).start()
-
-    def _restore_quarantine(self):
-        a = self._get_agent()
-        if not a: return
-        sel = self._qtree.selection()
-        if not sel:
-            messagebox.showwarning("No Selection", "Select a quarantined file to restore.")
-            return
-        qfile = self._qtree.item(sel[0])["values"][0]
-        if not messagebox.askyesno("Confirm Restore", f"Restore {qfile} to original location on {a.hostname}?"):
-            return
-
-        def run():
-            mid, _ = a.send_command("quarantine_restore", qfile)
-            resp = a.wait_response(mid, timeout=20)
-            if resp and resp.get("status") == "ok":
-                self.root.after(0, self._log, f"✓ Restored {qfile}", "success")
-                self.root.after(0, self._refresh_quarantine)
-            else:
-                err = (resp or {}).get("output", "Failed")
-                self.root.after(0, self._log, f"Restore error: {err}", "error")
-
-        threading.Thread(target=run, daemon=True).start()
-
-    # ── Defensive Commands: FIM ──────────────────────────────
-
-    def _append_fim_log(self, text: str, tag: str = "INFO"):
-        self._fim_log.config(state="normal")
-        self._fim_log.insert("end", text + "\n", tag)
-        self._fim_log.see("end")
-        self._fim_log.config(state="disabled")
-
-    def _cmd_fim_init(self):
-        a = self._get_agent()
-        if not a: return
-
-        def run():
-            mid, _ = a.send_command("fim_init")
-            resp = a.wait_response(mid, timeout=30)
-            if resp:
-                self.root.after(0, self._append_fim_log, f"[+] {resp.get('output')}", "INFO")
-                self.root.after(0, self._log, f"FIM Baseline: {resp.get('output')}", "success")
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _cmd_fim_check(self):
-        a = self._get_agent()
-        if not a: return
-
-        def run():
-            mid, _ = a.send_command("fim_check")
-            resp = a.wait_response(mid, timeout=30)
-            if resp and resp.get("status") == "ok":
-                try:
-                    changes = json.loads(resp["output"])
-                    if not changes:
-                        self.root.after(0, self._append_fim_log, "✓ Integrity audit passed: 0 modifications detected.", "ADDED")
-                    else:
-                        for c in changes:
-                            self.root.after(0, self._append_fim_log,
-                                           f"🚨 [{c.get('action')}] {c.get('path')} (Severity: {c.get('severity')})\n   {c.get('details')}",
-                                           c.get("action", "MODIFIED"))
-                except Exception as e:
-                    self.root.after(0, self._append_fim_log, f"Error parsing FIM audit: {e}", "MODIFIED")
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _cmd_fim_add_path(self):
-        a = self._get_agent()
-        if not a: return
-        p = self._fim_path_entry.get().strip()
-        if not p: return
-
-        def run():
-            mid, _ = a.send_command("fim_add_path", p)
-            resp = a.wait_response(mid, timeout=20)
-            if resp:
-                self.root.after(0, self._append_fim_log, f"[+] {resp.get('output')}", "INFO")
-                self.root.after(0, self._fim_path_entry.delete, 0, "end")
-
-        threading.Thread(target=run, daemon=True).start()
-
-    # ── Defensive Commands: DLP ──────────────────────────────
-
-    def _append_dlp_log(self, text: str, tag: str = "HIGH"):
-        self._dlp_text.config(state="normal")
-        self._dlp_text.insert("end", text + "\n", tag)
-        self._dlp_text.see("end")
-        self._dlp_text.config(state="disabled")
-
-    def _cmd_dlp_scan(self):
-        a = self._get_agent()
-        if not a: return
-        target = self._dlp_input.get().strip()
-        if not target:
-            messagebox.showwarning("Input Required", "Enter file path or buffer text to scan.")
-            return
-
-        def run():
-            mid, _ = a.send_command("dlp_scan", target)
-            resp = a.wait_response(mid, timeout=30)
-            if resp and resp.get("status") == "ok":
-                try:
-                    findings = json.loads(resp["output"])
-                    if not findings:
-                        self.root.after(0, self._append_dlp_log, f"✓ DLP Clean: No sensitive patterns detected in '{target}'", "preview")
-                    else:
-                        self.root.after(0, self._append_dlp_log, f"🚨 DLP VIOLATIONS ({len(findings)}) in '{target}':", "CRITICAL")
-                        for f in findings:
-                            self.root.after(0, self._append_dlp_log, f"   [{f['severity']}] {f['rule']}: {f.get('preview')}", "HIGH")
-                except Exception as e:
-                    self.root.after(0, self._append_dlp_log, f"DLP Output parse error: {e}", "HIGH")
-
-        threading.Thread(target=run, daemon=True).start()
-
-    # ── Defensive Commands: OpenEDR & Host Containment ───────
-
-    def _append_edr_log(self, text: str, tag: str = "event"):
-        self._edr_log.config(state="normal")
-        self._edr_log.insert("end", text, tag)
-        self._edr_log.see("end")
-        self._edr_log.config(state="disabled")
-
-    def _cmd_openedr_status(self):
-        a = self._get_agent()
-        if not a: return
-
-        def run():
-            mid, _ = a.send_command("openedr_status")
-            resp = a.wait_response(mid, timeout=15)
-            if resp and resp.get("status") == "ok":
-                try:
-                    st = json.loads(resp["output"])
-                    svc_status = "Active (Running)" if st.get("running") else ("Installed" if st.get("installed") else "Not Found")
-                    sz_mb = round(st.get("log_size_bytes", 0) / (1024**2), 2)
-                    summary = f"Service: {svc_status}  |  Kernel Filter: {'Loaded ✓' if st.get('minifilter') else 'Standard'}  |  Log: {sz_mb} MB ({st.get('log_path')})"
-                    self.root.after(0, self._edr_status_lbl.config, {"text": summary, "fg": C["green"] if st.get("running") else C["peach"]})
-                except Exception as e:
-                    self.root.after(0, self._log, f"EDR status parse error: {e}", "error")
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _cmd_openedr_fetch_telemetry(self):
-        a = self._get_agent()
-        if not a: return
-
-        def run():
-            mid, _ = a.send_command("openedr_fetch_telemetry")
-            resp = a.wait_response(mid, timeout=20)
-            if resp and resp.get("status") == "ok":
-                try:
-                    events = json.loads(resp["output"])
-                    self.root.after(0, self._append_edr_log, f"\n=== Fetched {len(events)} OpenEDR Telemetry Events from {a.hostname} ===\n", "info")
-                    for ev in events:
-                        self.root.after(0, self._append_edr_log, json.dumps(ev, indent=2) + "\n", "event")
-                except Exception as e:
-                    self.root.after(0, self._append_edr_log, f"Error reading telemetry: {e}\n", "info")
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _cmd_openedr_install(self):
-        a = self._get_agent()
-        if not a:
-            self._log("No agent selected", "warn")
-            return
-        if not messagebox.askyesno(
-            "Confirm Installation",
-            f"Install / configure OpenEDR and endpoint security dependencies on '{a.hostname}' ({a.ip})?\n\n"
-            f"This will deploy the OpenEDR service, configure telemetry logging, and install missing dependencies."
-        ):
-            return
-
-        self._log(f"Initiating OpenEDR and dependency installation on {a.hostname}...", "info")
-        self._append_edr_log(f"\n[*] Initiating remote OpenEDR installation on {a.hostname}...\n", "info")
-
-        def run():
-            mid, _ = a.send_command("install_openedr")
-            resp = a.wait_response(mid, timeout=120)
-            if resp and resp.get("status") == "ok":
-                output = resp.get("output", "Completed")
-                self.root.after(0, self._log, f"OpenEDR installation succeeded on {a.hostname}", "success")
-                self.root.after(0, self._append_edr_log, f"[+] OpenEDR installation on {a.hostname}:\n{output}\n", "event")
-                self.root.after(0, self._cmd_openedr_status)
-                self.root.after(0, self._refresh_sysinfo)
-            else:
-                err = (resp or {}).get("output", "Timeout waiting for installer to complete")
-                self.root.after(0, self._log, f"OpenEDR installation failed on {a.hostname}: {err}", "error")
-                self.root.after(0, self._append_edr_log, f"[!] OpenEDR installation failed on {a.hostname}: {err}\n", "info")
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def _cmd_host_isolation(self, enable: bool):
-        a = self._get_agent()
-        if not a: return
-        action_name = "ISOLATE" if enable else "RESTORE NETWORK FOR"
-        msg = f"Are you sure you want to {action_name} host '{a.hostname}'?\n\nIsolation drops all inbound and outbound traffic while strictly preserving the secure Server-EDR C2 channel."
-        if not messagebox.askyesno("Emergency Containment", msg):
-            return
-
-        def run():
-            mid, _ = a.send_command("isolate_host", "true" if enable else "false")
-            resp = a.wait_response(mid, timeout=25)
-            if resp:
-                tag = "success" if resp.get("status") == "ok" else "error"
-                self.root.after(0, self._log, f"Host Isolation: {resp.get('output')}", tag)
-                if resp.get("status") == "ok":
-                    self.root.after(0, messagebox.showinfo, "Host Isolation Status", resp.get("output"))
-            else:
-                self.root.after(0, self._log, "Isolation command timed out", "error")
-
-        threading.Thread(target=run, daemon=True).start()
-
-    # ── Miscellaneous ────────────────────────────────────────
-
-    def _disconnect(self):
-        a = self._get_agent()
-        if not a: return
-        if messagebox.askyesno("Disconnect", f"Close connection to {a.hostname}?"):
-            AUDIT.info("MANUAL_DISCONNECT  user=%s  host=%s", a.username, a.hostname)
-            try: a.conn.close()
-            except Exception: pass
-
-    def _start_clock(self):
-        def tick():
-            self._lbl_clock.config(text=datetime.now().strftime("%Y-%m-%d  %H:%M:%S"))
-            self.root.after(1000, tick)
-        tick()
-
-    def _show_config_dialog(self):
-        ServerConfigDialog(self.root, self.config, on_reload=self._reload_config)
-
-    def _show_enrollment_dialog(self):
-        creds = (
-            self.config.to_enrollment_credentials()
-            if self.config
-            else generate_enrollment_credentials(
-                self._host, self._port, self.server._psk.decode("utf-8", errors="replace"),
-                self._fingerprint or "", self._tls
-            )
-        )
-        EnrollmentCredentialsDialog(self.root, creds)
-
-    def _show_package_builder_dialog(self):
-        creds = (
-            self.config.to_enrollment_credentials()
-            if self.config
-            else generate_enrollment_credentials(
-                self._host, self._port, self.server._psk.decode("utf-8", errors="replace"),
-                self._fingerprint or "", self._tls
-            )
-        )
-        AgentPackageBuilderDialog(self.root, credentials=creds, config=self.config)
-
-    def _reload_config(self):
         try:
-            cfg_path = self.config.config_path if self.config else DEFAULT_CONFIG_FILE
-            new_cfg = reload_server_config(self.config, cfg_path)
-            self.config = new_cfg
-            self.server.update_credentials(psk=new_cfg.psk)
-            self._log(f"[+] Reloaded configuration from {cfg_path}", "success")
-            messagebox.showinfo("Configuration Reloaded", f"Successfully reloaded configuration from:\n{cfg_path}")
-        except Exception as e:
-            self._log(f"[!] Failed to reload configuration: {e}", "error")
-            messagebox.showerror("Reload Error", f"Failed reloading configuration: {e}")
+            async for msg in ws:
+                if msg.type == WSMsgType.TEXT:
+                    try:
+                        data = json.loads(msg.data)
+                        action = data.get("action") or data.get("type")
+                        if action == "ping":
+                            await ws.send_json({"type": "pong", "timestamp": datetime.now().isoformat()})
+                        elif action == "dispatch":
+                            aid = data.get("agent_id")
+                            cmd = data.get("command")
+                            args = data.get("args")
+                            timeout = float(data.get("timeout", 30))
+                            agent = self.server.get(aid) if aid else None
+                            if not agent:
+                                active = self.server.agents()
+                                if len(active) == 1: agent = active[0]
+                            if agent and cmd:
+                                self.server.audit_cmd(agent, cmd, str(args) if args is not None else "")
+                                mid, _ = agent.send_command(cmd, args)
+                                loop = asyncio.get_event_loop()
+                                resp = await loop.run_in_executor(None, agent.wait_response, mid, timeout)
+                                await ws.send_json({
+                                    "type": "command_result",
+                                    "agent_id": agent.id,
+                                    "command": cmd,
+                                    "response": resp
+                                })
+                            else:
+                                await ws.send_json({"type": "command_error", "error": "Target agent not found or missing command"})
+                    except Exception as e:
+                        await ws.send_json({"type": "error", "error": str(e)})
+                elif msg.type == WSMsgType.ERROR:
+                    break
+        finally:
+            self._ws_clients.discard(ws)
+        return ws
+
+    def _on_server_event(self, ev: str, data: Any):
+        if not self._loop or not self._loop.is_running():
+            return
+
+        payload = None
+        if ev == "connect":
+            payload = {
+                "type": "agent_connected",
+                "agent": {
+                    "id": data.id,
+                    "hostname": data.hostname,
+                    "username": data.username,
+                    "ip": data.ip,
+                    "os": data.os,
+                    "defense_capabilities": data.defense_caps,
+                    "attestation_status": data.attestation_status
+                },
+                "timestamp": datetime.now().isoformat()
+            }
+        elif ev == "disconnect":
+            payload = {
+                "type": "agent_disconnected",
+                "agent_id": data.id,
+                "hostname": data.hostname,
+                "timestamp": datetime.now().isoformat()
+            }
+        elif ev == "security_event":
+            agent, alert = data
+            payload = {
+                "type": "security_event",
+                "agent_id": agent.id,
+                "hostname": agent.hostname,
+                "alert": alert,
+                "timestamp": datetime.now().isoformat()
+            }
+        elif ev == "telemetry":
+            agent, frame = data
+            payload = {
+                "type": "telemetry",
+                "agent_id": agent.id,
+                "hostname": agent.hostname,
+                "telemetry": frame,
+                "timestamp": datetime.now().isoformat()
+            }
+        elif ev == "attestation_update":
+            payload = {
+                "type": "attestation_update",
+                "agent_id": data.id,
+                "hostname": data.hostname,
+                "status": data.attestation_status,
+                "details": getattr(data, "attestation_details", {}),
+                "timestamp": datetime.now().isoformat()
+            }
+
+        if payload:
+            asyncio.run_coroutine_threadsafe(self._broadcast(payload), self._loop)
+
+    async def _broadcast(self, msg: dict):
+        dead = []
+        for ws in list(self._ws_clients):
+            try:
+                await ws.send_json(msg)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self._ws_clients.discard(ws)
+
+    def broadcast_event(self, msg: dict):
+        """Broadcasts an event message dictionary to all connected WebSocket clients."""
+        if self._loop and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._broadcast(msg), self._loop)
+        else:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._broadcast(msg))
+            except RuntimeError:
+                pass
+
+    def start(self):
+        """Starts embedded web portal listening on self.port in a dedicated background daemon thread."""
+        def _run():
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._runner = web.AppRunner(self._app)
+            self._loop.run_until_complete(self._runner.setup())
+            self._site = web.TCPSite(
+                self._runner,
+                self.host,
+                self.port,
+                ssl_context=self.tls_context
+            )
+            self._loop.run_until_complete(self._site.start())
+            scheme = "https" if self.tls_context else "http"
+            AUDIT.info("WEB_PORTAL_START  url=%s://%s:%d", scheme, self.host, self.port)
+            self._loop.run_forever()
+
+        self._thread = threading.Thread(target=_run, daemon=True, name="web-portal")
+        self._thread.start()
+
+    def stop(self):
+        """Stops the embedded web portal runner and closes client connections."""
+        if self._loop and self._loop.is_running():
+            async def _cleanup():
+                for ws in list(self._ws_clients):
+                    try: await ws.close()
+                    except Exception: pass
+                if self._site:
+                    await self._site.stop()
+                if self._runner:
+                    await self._runner.cleanup()
+            asyncio.run_coroutine_threadsafe(_cleanup(), self._loop)
+            self._loop.call_soon_threadsafe(self._loop.stop)
 
 
-# ════════════════════════════════════════════════════════════════
-#  Entry Point
-# ════════════════════════════════════════════════════════════════
+App = WebPortal  # Headless WebPortal replaces the legacy desktop Tkinter App
+
 
 def ensure_server_dependencies():
     """Installs required/optional server dependencies like cryptography if missing."""
@@ -3296,8 +2590,9 @@ def ensure_server_dependencies():
 
 def main():
     p = argparse.ArgumentParser(description="Secure Endpoint Detection, Response & Defense Server")
-    p.add_argument("--host",   default=None, help=f"Bind address (default: {DEFAULT_HOST} or from config)")
-    p.add_argument("--port",   type=int, default=None, help=f"TCP port (default: {DEFAULT_PORT} or from config)")
+    p.add_argument("--host",   default=DEFAULT_HOST, help=f"Bind address (default: {DEFAULT_HOST})")
+    p.add_argument("--port",   type=int, default=DEFAULT_C2_PORT, help=f"C2 TCP port (default: {DEFAULT_C2_PORT})")
+    p.add_argument("--web-port", type=int, default=DEFAULT_WEB_PORT, help=f"Web Portal port (default: {DEFAULT_WEB_PORT})")
     p.add_argument("--psk",    default=None, help="Pre-shared key for agent auth (auto-generated if omitted)")
     p.add_argument("--cert",   default=None, help=f"TLS certificate PEM (default: {CERT_FILE} or from config)")
     p.add_argument("--key",    default=None, help=f"TLS private key PEM (default: {KEY_FILE} or from config)")
@@ -3306,7 +2601,7 @@ def main():
     p.add_argument("--install-deps", action="store_true", help="Install missing server dependencies (e.g. cryptography)")
     p.add_argument("--config", default=DEFAULT_CONFIG_FILE, help=f"Configuration file path (default: {DEFAULT_CONFIG_FILE})")
     p.add_argument("--wizard", "--first-run", action="store_true", dest="wizard", help="Force launch first-run configuration wizard")
-    p.add_argument("--headless", "--non-interactive", action="store_true", dest="headless", help="Run without interactive GUI prompts")
+    p.add_argument("--headless", "--non-interactive", action="store_true", dest="headless", help="Run without interactive prompts")
     p.add_argument("--reload", action="store_true", help="Validate and reload existing configuration from disk, then exit")
     p.add_argument("--build-package", choices=["linux", "windows", "all"], default=None, help="Build deployable agent package archive and exit")
     p.add_argument("--package-output", default=None, help="Target output file or directory for built package")
@@ -3326,24 +2621,22 @@ def main():
     if args.reload:
         cfg = load_server_config(config_path)
         print(f"[+] Successfully loaded and validated configuration from {config_path}")
-        print(f"    Server: {cfg.host}:{cfg.port}")
-        print(f"    TLS: {cfg.use_tls}")
-        print(f"    Fingerprint: {cfg.cert_fingerprint}")
-        print(f"    PSK: {mask_credential(cfg.psk)}")
+        print(f"    C2 Server:  {cfg.host}:{cfg.port}")
+        print(f"    Web Portal: {cfg.host}:{cfg.web_port}")
+        print(f"    TLS:        {cfg.use_tls}")
+        print(f"    Fingerprint:{cfg.cert_fingerprint}")
+        print(f"    PSK:        {mask_credential(cfg.psk)}")
         return
 
     is_first_run = not os.path.exists(config_path) or args.wizard
 
     if is_first_run:
-        interactive = not args.headless and not args.build_package
-        if interactive and os.name == "posix" and not os.environ.get("DISPLAY"):
-            interactive = False
-
         config = run_config_wizard(
             config_path=config_path,
-            interactive=interactive,
+            interactive=False,
             host=args.host or DEFAULT_HOST,
-            port=args.port or DEFAULT_PORT,
+            port=args.port or DEFAULT_C2_PORT,
+            web_port=args.web_port or DEFAULT_WEB_PORT,
             psk=args.psk,
             use_tls=not args.no_tls,
             cert_file=args.cert or CERT_FILE,
@@ -3356,6 +2649,8 @@ def main():
             config.host = args.host
         if args.port is not None:
             config.port = args.port
+        if args.web_port is not None:
+            config.web_port = args.web_port
         if args.psk is not None:
             config.psk = args.psk
         if args.cert is not None:
@@ -3398,7 +2693,7 @@ def main():
     else:
         print("\n  WARNING: TLS disabled -- traffic will be unencrypted")
     print(f"{'='*60}\n")
- 
+
     if args.build_package:
         target_os_list = ["linux", "windows"] if args.build_package == "all" else [args.build_package]
         for target_os in target_os_list:
@@ -3438,25 +2733,30 @@ def main():
             except ValueError as e:
                 print(f"[!] Invalid CIDR '{cidr}': {e}")
 
-    AUDIT.info("SERVER_START  host=%s  port=%d  tls=%s  allow=%s",
-               config.host, config.port, tls_context is not None,
+    AUDIT.info("SERVER_START  host=%s  c2_port=%d  web_port=%d  tls=%s  allow=%s",
+               config.host, config.port, config.web_port, tls_context is not None,
                [str(n) for n in allow_nets] or "any")
 
-    if args.headless:
-        print(f"[+] Headless server running on {config.host}:{config.port} (Ctrl+C to stop)...")
-        server = EDRServer(config.host, config.port, psk, tls_context, allow_nets)
-        server.start()
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("[*] Server shutting down...")
-        return
+    # Start C2 Agent TCP Listener (Default port 443)
+    server = EDRServer(config.host, config.port, psk, tls_context, allow_nets)
+    server.start()
 
-    root = tk.Tk()
-    root.tk_setPalette(background=C["base"], foreground=C["text"])
-    App(root, config.host, config.port, psk, tls_context, fingerprint, allow_nets, config=config)
-    root.mainloop()
+    # Start Web Portal (Default port 8443) sharing the TLS context
+    web_port = getattr(config, "web_port", DEFAULT_WEB_PORT)
+    portal = WebPortal(server, config.host, web_port, config, tls_context)
+    portal.start()
+
+    scheme = "https" if tls_context else "http"
+    print(f"[+] Server-EDR C2 Socket listening on {config.host}:{config.port}")
+    print(f"[+] Server-EDR Web Portal listening on {scheme}://{config.host}:{web_port}")
+    print(f"[*] Dual-listener infrastructure active. (Press Ctrl+C to terminate)")
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("[*] Server shutting down...")
+        portal.stop()
 
 
 if __name__ == "__main__":

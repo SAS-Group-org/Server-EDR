@@ -64,7 +64,7 @@ class TestWindowsAgentConfigPowerShell(unittest.TestCase):
         proc = run_powershell(ps_cmd)
         self.assertEqual(proc.returncode, 0, f"Error: {proc.stderr}")
         self.assertIn("HOST=127.0.0.1", proc.stdout)
-        self.assertIn("PORT=4444", proc.stdout)
+        self.assertIn("PORT=443", proc.stdout)
         self.assertIn("TLS=True", proc.stdout)
 
     def test_load_nested_json_config(self):

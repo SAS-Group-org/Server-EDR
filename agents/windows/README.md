@@ -31,7 +31,7 @@ The agent dynamically resolves configuration parameters with the following prece
 1. **Command-Line Arguments** (`-ServerHost`, `-ServerPort`, `-PSK`, `-CertThumbprint`, `-UseTLSStr`, `-ConfigPath`)
 2. **Configuration File** (`agent_config.json` in script directory, or at `$env:EDR_CONFIG_FILE` / `ProgramData\Server-EDR\agent_config.json`)
 3. **Environment Variables** (`EDR_SERVER_HOST`, `EDR_SERVER_PORT`, `EDR_PSK`, `EDR_CERT_FINGERPRINT`, `EDR_USE_TLS`, or legacy `RAT_*`)
-4. **Hardcoded Defaults** (`127.0.0.1:4444`, TLS enabled, 10s reconnection interval)
+4. **Hardcoded Defaults** (`127.0.0.1:443`, TLS enabled, 10s reconnection interval)
 
 ### Standalone Validation and Connectivity Probe
 ```powershell
@@ -39,13 +39,13 @@ The agent dynamically resolves configuration parameters with the following prece
 powershell -ExecutionPolicy Bypass -File .\Agent-Core.ps1 -ValidateConfig -ConfigPath .\agent_config.json
 
 # Probe connectivity to server endpoint
-powershell -ExecutionPolicy Bypass -File .\Agent-Core.ps1 -CheckConnection -ServerHost 192.168.1.50 -ServerPort 4444
+powershell -ExecutionPolicy Bypass -File .\Agent-Core.ps1 -CheckConnection -ServerHost 192.168.1.50 -ServerPort 443
 ```
 
 ## Running as a Background Windows Service
 Run from an elevated PowerShell console (Run as Administrator):
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\Service\Install-Service.ps1 -ServerHost 192.168.1.50 -ServerPort 4444 -PSK "YourEnrollmentKey"
+powershell -ExecutionPolicy Bypass -File .\Service\Install-Service.ps1 -ServerHost 192.168.1.50 -ServerPort 443 -PSK "YourEnrollmentKey"
 ```
 
 To uninstall:

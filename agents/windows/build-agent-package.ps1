@@ -137,7 +137,7 @@ try {
         $injectedConfigObj = [ordered]@{
             server = [ordered]@{
                 host               = if ($ServerHost) { $ServerHost } else { "127.0.0.1" }
-                port               = if ($ServerPort -gt 0) { $ServerPort } else { 4444 }
+                port               = if ($ServerPort -gt 0) { $ServerPort } else { 443 }
                 use_tls            = (-not $NoTLS)
                 cert_fingerprint   = if ($CertThumbprint) { $CertThumbprint } else { "" }
                 reconnect_interval = 10

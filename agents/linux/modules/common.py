@@ -19,7 +19,7 @@ except ImportError:
 
 DEFAULT_AGENT_CONFIG = {
     "server_host": "127.0.0.1",
-    "server_port": 4444,
+    "server_port": 443,
     "psk": "PASTE_PSK_HERE",
     "cert_fingerprint": "",
     "use_tls": True,
@@ -37,7 +37,7 @@ DEFAULT_AGENT_CONFIG = {
     "auto_install_openedr": False,
     "server": {
         "host": "127.0.0.1",
-        "port": 4444,
+        "port": 443,
         "use_tls": True,
         "cert_fingerprint": "",
         "reconnect_interval": 10,
@@ -192,9 +192,9 @@ def load_agent_config(config_path: str = None) -> dict:
 
     # Type normalization
     try:
-        config["server_port"] = int(config.get("server_port", 4444))
+        config["server_port"] = int(config.get("server_port", 443))
     except (ValueError, TypeError):
-        config["server_port"] = 4444
+        config["server_port"] = 443
 
     try:
         config["reconnect_secs"] = int(config.get("reconnect_secs", 10))
@@ -408,8 +408,8 @@ def apply_agent_config(config: dict) -> None:
 
 # Initial bootstrap of module-level config globals
 _initial_config = load_agent_config()
-SERVER_HOST             = _initial_config["server_host"]
-SERVER_PORT             = _initial_config["server_port"]
+SERVER_HOST             = os.environ.get("EDR_SERVER_HOST", os.environ.get("RAT_SERVER_HOST", _initial_config["server_host"]))
+SERVER_PORT             = int(os.environ.get("EDR_SERVER_PORT", os.environ.get("RAT_SERVER_PORT", str(_initial_config["server_port"]))))
 PSK                     = _initial_config["psk"]
 CERT_FINGERPRINT        = _initial_config["cert_fingerprint"]
 USE_TLS                 = _initial_config["use_tls"]
