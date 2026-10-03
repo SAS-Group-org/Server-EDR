@@ -750,20 +750,48 @@ def load_authoritative_checksums() -> Dict[str, str]:
 
 
 # ════════════════════════════════════════════════════════════════
-#  Audit Logging
+#  Audit & Server Logging
 # ════════════════════════════════════════════════════════════════
 
-def _setup_audit_log() -> logging.Logger:
+def configure_server_logging(debug: bool = False, log_file: str = LOG_FILE, console: bool = True) -> logging.Logger:
+    """Configures server logging with rotating file handler and optional console stream handler."""
+    global AUDIT
     log = logging.getLogger("edr_audit")
-    log.setLevel(logging.INFO)
-    if not log.handlers:
-        fh = RotatingFileHandler(LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
-        fh.setFormatter(logging.Formatter(
-            "%(asctime)s  %(levelname)-7s  %(message)s",
+    level = logging.DEBUG if debug else logging.INFO
+    log.setLevel(level)
+
+    for h in list(log.handlers):
+        log.removeHandler(h)
+
+    formatter = logging.Formatter(
+        "%(asctime)s  %(levelname)-7s  %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    try:
+        fh = RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+        fh.setLevel(level)
+        fh.setFormatter(formatter)
+        log.addHandler(fh)
+    except Exception as e:
+        print(f"[!] Warning: Failed initializing audit log at {log_file}: {e}")
+
+    if console:
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setLevel(level)
+        ch.setFormatter(logging.Formatter(
+            "[%(asctime)s] [%(levelname)-7s] %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         ))
-        log.addHandler(fh)
+        log.addHandler(ch)
+
+    AUDIT = log
     return log
+
+
+def _setup_audit_log() -> logging.Logger:
+    env_debug = os.environ.get("EDR_DEBUG", "").lower() in ("1", "true", "yes") or os.environ.get("EDR_LOG_LEVEL", "").upper() == "DEBUG"
+    return configure_server_logging(debug=env_debug, log_file=LOG_FILE, console=True)
 
 
 AUDIT = _setup_audit_log()
@@ -822,8 +850,12 @@ class Agent:
         if not raw:
             return None
         try:
-            return json.loads(raw.decode("utf-8", errors="replace"))
-        except json.JSONDecodeError:
+            msg = json.loads(raw.decode("utf-8", errors="replace"))
+            AUDIT.debug("RECV_MSG  ip=%s  type=%s  id=%s  size=%d",
+                        self.addr[0], msg.get("type"), msg.get("id", ""), length)
+            return msg
+        except json.JSONDecodeError as e:
+            AUDIT.warning("BAD_JSON  ip=%s  err=%s", self.addr[0], e)
             return None
 
     def send_msg(self, data: dict) -> bool:
@@ -832,8 +864,12 @@ class Agent:
             header  = struct.pack("<I", len(payload))
             with self._send_lock:
                 self.conn.sendall(header + payload)
+            AUDIT.debug("SEND_MSG  ip=%s  type=%s  id=%s  size=%d",
+                        self.addr[0], data.get("type"), data.get("id", ""), len(payload))
             return True
-        except (OSError, ssl.SSLError):
+        except (OSError, ssl.SSLError) as e:
+            AUDIT.debug("SEND_MSG_FAIL  ip=%s  type=%s  err=%s",
+                        self.addr[0], data.get("type"), e)
             return False
 
     def send_command(self, command: str, args=None, **kwargs) -> Tuple[str, threading.Event]:
@@ -937,8 +973,9 @@ class EDRServer:
                 raw_conn, addr = self._sock.accept()
             except OSError:
                 break
+            AUDIT.debug("TCP_ACCEPT  ip=%s  port=%d", addr[0], addr[1])
             if not self._ip_allowed(addr[0]):
-                AUDIT.warning("REJECT_IP  ip=%s", addr[0])
+                AUDIT.warning("REJECT_IP  ip=%s  port=%d (not in allowlist)", addr[0], addr[1])
                 raw_conn.close()
                 continue
             raw_conn.settimeout(AUTH_TIMEOUT_SECS)
@@ -946,28 +983,43 @@ class EDRServer:
                 target=self._handle,
                 args=(raw_conn, addr),
                 daemon=True,
-                name=f"agent-{addr[0]}",
+                name=f"agent-{addr[0]}:{addr[1]}",
             ).start()
 
     def _handle(self, raw_conn: socket.socket, addr: Tuple[str, int]):
         conn = raw_conn
         if self.tls_context:
+            AUDIT.debug("TLS_START  ip=%s  port=%d", addr[0], addr[1])
             try:
                 conn = self.tls_context.wrap_socket(raw_conn, server_side=True)
+                cipher = conn.cipher()
+                ssl_ver = conn.version()
+                AUDIT.debug("TLS_OK  ip=%s  ver=%s  cipher=%s", addr[0], ssl_ver, cipher[0] if cipher else "Unknown")
             except (ssl.SSLError, OSError) as e:
                 AUDIT.warning("TLS_FAIL  ip=%s  err=%s", addr[0], e)
-                raw_conn.close()
+                try:
+                    raw_conn.close()
+                except Exception:
+                    pass
                 return
 
         agent = Agent(conn, addr)
         try:
-            if not self._authenticate(agent):
+            AUDIT.debug("AUTH_START  ip=%s", addr[0])
+            auth_ok, auth_err = self._authenticate_with_reason(agent)
+            if not auth_ok:
+                AUDIT.warning("AUTH_FAIL  ip=%s  reason=%s", addr[0], auth_err)
                 conn.close()
                 return
 
+            AUDIT.debug("WAIT_REGISTER  ip=%s", addr[0])
             msg = agent.recv_msg()
-            if not msg or msg.get("type") != "register":
-                AUDIT.warning("BAD_REGISTER  ip=%s", addr[0])
+            if not msg:
+                AUDIT.warning("BAD_REGISTER  ip=%s  reason=Connection closed or timeout waiting for register payload", addr[0])
+                conn.close()
+                return
+            if msg.get("type") != "register":
+                AUDIT.warning("BAD_REGISTER  ip=%s  reason=Expected type 'register', received '%s'", addr[0], msg.get("type"))
                 conn.close()
                 return
 
@@ -992,10 +1044,11 @@ class EDRServer:
 
             with self._lock:
                 self._agents[agent.id] = agent
+                total_active = len(self._agents)
 
-            AUDIT.info("CONNECT  user=%s  host=%s  ip=%s  os=%s  admin=%s",
-                       agent.username, agent.hostname, agent.ip,
-                       agent.os, agent.is_admin)
+            AUDIT.info("CONNECT  agent_id=%s  user=%s  host=%s  ip=%s  os=%s  admin=%s  active_agents=%d",
+                       agent.id, agent.username, agent.hostname, agent.ip,
+                       agent.os, agent.is_admin, total_active)
             self._fire("connect", agent)
 
             # Auto-verify code attestation asynchronously
@@ -1010,6 +1063,7 @@ class EDRServer:
             while True:
                 msg = agent.recv_msg()
                 if msg is None:
+                    AUDIT.debug("RECV_EOF  agent_id=%s  host=%s", agent.id, agent.hostname)
                     break
                 agent.last_seen = datetime.now()
                 agent._liveness_alerted = False
@@ -1021,14 +1075,15 @@ class EDRServer:
                 elif mtype == "telemetry":
                     self._dispatch_telemetry(agent, msg)
 
-        except Exception:
-            pass
+        except Exception as e:
+            AUDIT.error("AGENT_HANDLER_EXCEPTION  ip=%s  err=%s", addr[0], e, exc_info=True)
         finally:
             with self._lock:
                 self._agents.pop(agent.id, None)
+                remaining = len(self._agents)
             agent.abort_pending("Agent disconnected")
-            AUDIT.info("DISCONNECT  user=%s  host=%s  ip=%s",
-                       agent.username, agent.hostname, agent.ip)
+            AUDIT.info("DISCONNECT  agent_id=%s  user=%s  host=%s  ip=%s  remaining_agents=%d",
+                       agent.id, agent.username, agent.hostname, agent.ip, remaining)
             self._fire("disconnect", agent)
             try:
                 conn.close()
@@ -1036,21 +1091,33 @@ class EDRServer:
                 pass
 
     def _authenticate(self, agent: Agent) -> bool:
+        ok, _ = self._authenticate_with_reason(agent)
+        return ok
+
+    def _authenticate_with_reason(self, agent: Agent) -> Tuple[bool, str]:
         nonce = secrets.token_bytes(32)
+        AUDIT.debug("AUTH_SEND_CHALLENGE  ip=%s  nonce=%s...", agent.addr[0], nonce.hex()[:16])
         if not agent.send_msg({"type": "challenge", "nonce": nonce.hex()}):
-            return False
+            return False, "Failed to send challenge nonce to agent"
         msg = agent.recv_msg()
-        if not msg or msg.get("type") != "auth":
-            return False
+        if not msg:
+            return False, "Connection closed or timeout waiting for auth response"
+        if msg.get("type") != "auth":
+            return False, f"Expected message type 'auth', received '{msg.get('type')}'"
+        raw_hmac = msg.get("hmac")
+        if not raw_hmac:
+            return False, "Missing 'hmac' token in auth response"
         try:
-            claimed = bytes.fromhex(msg["hmac"])
-        except (KeyError, ValueError):
-            return False
+            claimed = bytes.fromhex(raw_hmac)
+        except (KeyError, ValueError, TypeError) as e:
+            return False, f"Invalid hex encoding in hmac token: {e}"
         expected = _hmac.new(self._psk, nonce, hashlib.sha256).digest()
         if not _hmac.compare_digest(expected, claimed):
-            return False
-        agent.send_msg({"type": "auth_ok"})
-        return True
+            return False, "HMAC signature mismatch (incorrect PSK configured on agent or server)"
+        if not agent.send_msg({"type": "auth_ok"}):
+            return False, "Failed to send auth_ok confirmation to agent"
+        AUDIT.debug("AUTH_SUCCESS  ip=%s", agent.addr[0])
+        return True, "Success"
 
     def _dispatch_security_event(self, agent: Agent, msg: dict):
         AUDIT.warning("SECURITY_EVENT  host=%s  subsystem=%s  sev=%s  title=%s",
@@ -2611,7 +2678,13 @@ def main():
     p.add_argument("--package-fingerprint", default=None, help="Certificate fingerprint override for built package")
     p.add_argument("--package-group", default=None, help="Group tag override for built package (e.g. servers)")
     p.add_argument("--package-interval", type=int, default=10, help="Polling/heartbeat interval override in seconds")
+    p.add_argument("--debug", action="store_true", help="Enable verbose DEBUG logging to console and log file for troubleshooting connectivity")
     args = p.parse_args()
+
+    # Reconfigure logging early if --debug is passed
+    if args.debug:
+        configure_server_logging(debug=True, log_file=LOG_FILE, console=True)
+        AUDIT.debug("DEBUG_MODE  Debug logging enabled via --debug flag")
 
     if args.install_deps:
         ensure_server_dependencies()
@@ -2733,22 +2806,29 @@ def main():
             except ValueError as e:
                 print(f"[!] Invalid CIDR '{cidr}': {e}")
 
-    AUDIT.info("SERVER_START  host=%s  c2_port=%d  web_port=%d  tls=%s  allow=%s",
+    AUDIT.info("SERVER_START  host=%s  c2_port=%d  web_port=%d  tls=%s  allow=%s  debug=%s",
                config.host, config.port, config.web_port, tls_context is not None,
-               [str(n) for n in allow_nets] or "any")
+               [str(n) for n in allow_nets] or "any", args.debug)
+    AUDIT.debug("SERVER_CONFIG  psk_len=%d  cert=%s  key=%s  fingerprint=%s",
+                len(psk), config.cert_file, config.key_file,
+                fingerprint[:16] + "..." if fingerprint else "None")
 
     # Start C2 Agent TCP Listener (Default port 443)
     server = EDRServer(config.host, config.port, psk, tls_context, allow_nets)
     server.start()
+    AUDIT.debug("C2_LISTENER_STARTED  host=%s  port=%d", config.host, config.port)
 
     # Start Web Portal (Default port 8443) sharing the TLS context
     web_port = getattr(config, "web_port", DEFAULT_WEB_PORT)
     portal = WebPortal(server, config.host, web_port, config, tls_context)
     portal.start()
+    AUDIT.debug("WEB_PORTAL_STARTED  host=%s  port=%d", config.host, web_port)
 
     scheme = "https" if tls_context else "http"
     print(f"[+] Server-EDR C2 Socket listening on {config.host}:{config.port}")
     print(f"[+] Server-EDR Web Portal listening on {scheme}://{config.host}:{web_port}")
+    if args.debug:
+        print(f"[*] DEBUG MODE ACTIVE — verbose connection diagnostics enabled in console and {LOG_FILE}")
     print(f"[*] Dual-listener infrastructure active. (Press Ctrl+C to terminate)")
 
     try:

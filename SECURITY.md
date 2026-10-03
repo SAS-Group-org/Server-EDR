@@ -2,11 +2,11 @@
 
 ## 1. Supported Versions
 
-### | Version | Supported          | Security Updates |
-### | 2.0.0   | :white_check_mark: | Active support   |
-### | 1.1.x    | :x:                | Unsupported      |
-### | 1.0.x    | :x:                | Unsupported      |
-### | < 1.0   | :x:                | Unsupported      |
+| Version | Supported          | Security Updates |
+| :---    | :---:              | :---             |
+| 1.1.x   | :white_check_mark: | Active support   |
+| 1.0.x   | :white_check_mark: | Critical patches only |
+| < 1.0   | :x:                | Unsupported      |
 
 ---
 

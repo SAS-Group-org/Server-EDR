@@ -13,7 +13,8 @@ param(
     [switch]$ValidateConfig,
     [switch]$CheckConnection,
     [switch]$InstallOpenEDR,
-    [switch]$InstallDeps
+    [switch]$InstallDeps,
+    [switch]$EnableDebug
 )
 
 if ($ServerPort -le 0) {
@@ -30,6 +31,12 @@ Import-Module (Join-Path $ModulesDir "DLP.psm1")      -Force
 Import-Module (Join-Path $ModulesDir "Malware.psm1")  -Force
 Import-Module (Join-Path $ModulesDir "OpenEDR.psm1")  -Force
 Import-Module (Join-Path $ModulesDir "Executor.psm1") -Force
+
+# Initialize debug logging if requested
+if ($EnableDebug) {
+    Initialize-EDRDebug -Enable
+    Write-DebugLog "DEBUG_MODE" "Debug logging enabled via -EnableDebug switch" -Level "INFO"
+}
 
 # 1. Load baseline config from agent_config.json or env vars or defaults
 $config = Load-AgentConfig -ConfigPath $ConfigPath
@@ -142,22 +149,34 @@ while ($true) {
     $stream = $null
 
     try {
+        Write-DebugLog "CONNECT_START" "target=${ServerHost}:${ServerPort}  tls=$UseTLS"
         $client = New-Object System.Net.Sockets.TcpClient
         $connectTask = $client.ConnectAsync($ServerHost, $ServerPort)
         if (-not $connectTask.Wait(15000)) { throw "Connection timeout" }
+        Write-DebugLog "TCP_OK" "connected to ${ServerHost}:${ServerPort}"
 
         $stream = Get-SecureStream -TcpClient $client -ServerHost $ServerHost -CertThumbprint $CertThumbprint -UseTLS $UseTLS
 
         # HMAC Handshake
+        Write-DebugLog "AUTH_WAIT_CHALLENGE" "Waiting for server challenge..."
         $challenge = Recv-Msg -Stream $stream
-        if ($null -eq $challenge -or $challenge.type -ne "challenge") { throw "Expected auth challenge" }
+        if ($null -eq $challenge -or $challenge.type -ne "challenge") {
+            Write-DebugLog "AUTH_FAIL" "Expected 'challenge', got '$($challenge.type)'" -Level "ERROR"
+            throw "Expected auth challenge"
+        }
 
         $nonceHex = $challenge.nonce
         $hmacStr  = Compute-HMAC -Key $PSK -NonceHex $nonceHex
+        Write-DebugLog "AUTH_SEND_HMAC" "nonce=$($nonceHex.Substring(0, [Math]::Min(16, $nonceHex.Length)))...  hmac=$($hmacStr.Substring(0, [Math]::Min(16, $hmacStr.Length)))..."
         Send-Msg -Stream $stream -Data @{ type = "auth"; hmac = $hmacStr }
 
+        Write-DebugLog "AUTH_WAIT_RESPONSE" "Waiting for auth_ok from server..."
         $authResp = Recv-Msg -Stream $stream
-        if ($null -eq $authResp -or $authResp.type -ne "auth_ok") { throw "Authentication failed" }
+        if ($null -eq $authResp -or $authResp.type -ne "auth_ok") {
+            Write-DebugLog "AUTH_FAIL" "Server rejected authentication (type=$($authResp.type)). Check PSK matches server." -Level "ERROR"
+            throw "Authentication failed"
+        }
+        Write-DebugLog "AUTH_SUCCESS" "Server accepted authentication"
 
         # Baseline FIM
         Init-FIMBaseline
@@ -182,8 +201,10 @@ while ($true) {
                                       [Security.Principal.WindowsBuiltInRole]::Administrator)
             defense_capabilities = @("malware_prevention", "fim", "dlp", "openedr")
         }
+        Write-DebugLog "REGISTER_SEND" "hostname=$($reg.hostname)  ip=$($reg.ip)  os=$($reg.os)"
         Send-Msg -Stream $stream -Data $reg
         $global:DyingGaspStream = $stream
+        Write-DebugLog "CONNECTED" "Authenticated and registered as Windows Defense Sensor" -Level "INFO"
         Write-Host "[+] Connected and authenticated as Windows Defense Sensor"
 
         # Apply NTFS ACL protection
@@ -197,8 +218,12 @@ while ($true) {
         try { $edrInitial = (Get-Service -Name "edrsvc" -ErrorAction SilentlyContinue).Status -eq "Running" } catch {}
 
         # -- Non-Blocking Command & Event Loop --
+        Write-DebugLog "CMD_LOOP_ENTER" "Waiting for server commands..."
         while ($true) {
-            if ($null -eq $client -or -not $client.Connected) { break }
+            if ($null -eq $client -or -not $client.Connected) {
+                Write-DebugLog "DISCONNECT" "TCP client disconnected" -Level "WARNING"
+                break
+            }
 
             $now = [datetime]::UtcNow
 
@@ -306,12 +331,15 @@ while ($true) {
         }
 
     } catch {
-        # Retry connection
+        Write-DebugLog "CONNECTION_ERROR" "$($_.Exception.GetType().Name): $($_.Exception.Message)" -Level "ERROR"
     } finally {
         $global:DyingGaspStream = $null
         if ($stream) { try { $stream.Dispose() } catch {} }
         if ($client) { try { $client.Close() } catch {} }
+        Write-DebugLog "DISCONNECT" "Cleaned up TCP client and streams"
     }
 
+    Write-DebugLog "RECONNECT_WAIT" "seconds=$ReconnectSecs"
+    Write-Host "[*] Reconnecting in $ReconnectSecs seconds..."
     Start-Sleep -Seconds $ReconnectSecs
 }

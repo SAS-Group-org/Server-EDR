@@ -1,6 +1,10 @@
 from .common import (
+    AGENT_LOG, setup_agent_logger,
     SERVER_HOST, SERVER_PORT, PSK, CERT_FINGERPRINT, USE_TLS, RECONNECT_SECS, MAX_MSG_BYTES,
     FIM_ENABLED, FIM_CHECK_INTERVAL_SECS, DLP_ENABLED, DLP_BLOCK_TRANSFERS, OPENEDR_LOG_PATH, AUTO_INSTALL_OPENEDR,
+    DEFAULT_AGENT_CONFIG, DEFAULT_CONFIG_LOCATIONS,
+    load_agent_config, validate_agent_config, save_agent_config, apply_agent_config, check_server_connectivity,
+    MODULE_SERVER_HOST, MODULE_SERVER_PORT, MODULE_PSK, MODULE_USE_TLS, MODULE_CERT_FINGERPRINT,
     send_msg, recv_msg, send_event, send_telemetry, authenticate, get_secure_stream,
     get_username, get_hostname, get_local_ip, is_root, get_uptime, get_ram_gb
 )
@@ -15,8 +19,11 @@ from .executor import (
 )
 
 __all__ = [
+    "AGENT_LOG", "setup_agent_logger",
     "SERVER_HOST", "SERVER_PORT", "PSK", "CERT_FINGERPRINT", "USE_TLS", "RECONNECT_SECS", "MAX_MSG_BYTES",
     "FIM_ENABLED", "FIM_CHECK_INTERVAL_SECS", "DLP_ENABLED", "DLP_BLOCK_TRANSFERS", "OPENEDR_LOG_PATH", "AUTO_INSTALL_OPENEDR",
+    "DEFAULT_AGENT_CONFIG", "DEFAULT_CONFIG_LOCATIONS",
+    "load_agent_config", "validate_agent_config", "save_agent_config", "apply_agent_config", "check_server_connectivity",
     "send_msg", "recv_msg", "send_event", "send_telemetry", "authenticate", "get_secure_stream",
     "get_username", "get_hostname", "get_local_ip", "is_root", "get_uptime", "get_ram_gb",
     "FIMMonitor",

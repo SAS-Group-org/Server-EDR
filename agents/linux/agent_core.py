@@ -16,6 +16,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from modules import (
+    AGENT_LOG, setup_agent_logger,
     SERVER_HOST, SERVER_PORT, PSK, CERT_FINGERPRINT, USE_TLS, RECONNECT_SECS,
     FIM_ENABLED, FIM_CHECK_INTERVAL_SECS, AUTO_INSTALL_OPENEDR,
     load_agent_config, validate_agent_config, save_agent_config, apply_agent_config,
@@ -289,9 +290,11 @@ def main(config_path: str = None, config_override: dict = None):
         bg_thread = None
 
         try:
+            AGENT_LOG.debug("CONNECT_START  target=%s:%d  tls=%s", SERVER_HOST, SERVER_PORT, USE_TLS)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(15)
             sock.connect((SERVER_HOST, SERVER_PORT))
+            AGENT_LOG.debug("TCP_OK  connected to %s:%d", SERVER_HOST, SERVER_PORT)
 
             stream = get_secure_stream(sock)
             stream.settimeout(15)
@@ -311,7 +314,10 @@ def main(config_path: str = None, config_override: dict = None):
                 "is_root": is_root(),
                 "defense_capabilities": ["malware_prevention", "fim", "dlp", "openedr"],
             }
+            AGENT_LOG.debug("REGISTER_SEND  hostname=%s  ip=%s  os=%s %s",
+                            reg["hostname"], reg["ip"], uname.system, uname.release)
             send_msg(stream, reg)
+            AGENT_LOG.info("CONNECTED  Authenticated and registered as Endpoint Defense Sensor")
             print("[+] Connected and authenticated as Endpoint Defense Sensor")
             _dying_gasp_stream = stream  # enable dying-gasp alerting
 
@@ -323,8 +329,10 @@ def main(config_path: str = None, config_override: dict = None):
                 name="defense-monitor"
             )
             bg_thread.start()
+            AGENT_LOG.debug("DEFENSE_MONITOR_STARTED  thread=%s", bg_thread.name)
 
             # Command loop
+            AGENT_LOG.debug("CMD_LOOP_ENTER  Waiting for server commands...")
             while True:
                 # 1. Drain response queue
                 while not response_queue.empty():
@@ -332,6 +340,7 @@ def main(config_path: str = None, config_override: dict = None):
                     try:
                         send_msg(stream, resp)
                     except Exception as e:
+                        AGENT_LOG.warning("RESPONSE_SEND_FAIL  id=%s  error=%s", resp.get("id", ""), e)
                         print(f"[!] Failed to send response: {e}")
                 
                 # 2. Poll for incoming messages
@@ -341,6 +350,7 @@ def main(config_path: str = None, config_override: dict = None):
                     mid = msg.get("id", "")
                     
                     if cmd:
+                        AGENT_LOG.debug("CMD_RECV  command=%s  id=%s", cmd, mid)
                         executor.submit(execute_command_task, cmd, mid, msg, stream, fim_mon, mal_def, response_queue)
                         
                 except socket.timeout:
@@ -352,6 +362,7 @@ def main(config_path: str = None, config_override: dict = None):
             break
         except Exception as e:
             if not isinstance(e, socket.timeout):
+                AGENT_LOG.error("CONNECTION_ERROR  %s: %s", type(e).__name__, e)
                 print(f"[!] Connection error: {e}")
         finally:
             _dying_gasp_stream = None  # disable dying-gasp before cleanup
@@ -366,7 +377,9 @@ def main(config_path: str = None, config_override: dict = None):
                     sock.close()
                 except Exception:
                     pass
+            AGENT_LOG.debug("DISCONNECT  Cleaned up socket and streams")
 
+        AGENT_LOG.debug("RECONNECT_WAIT  seconds=%d", RECONNECT_SECS)
         print(f"[*] Reconnecting in {RECONNECT_SECS} seconds...")
         time.sleep(RECONNECT_SECS)
 
@@ -393,7 +406,14 @@ def _watchdog_supervisor():
                         help="Probe connectivity to server endpoint and exit")
     parser.add_argument("--install-openedr", "--install-deps", action="store_true", dest="install_deps",
                         help="Install and configure OpenEDR and endpoint security dependencies")
+    parser.add_argument("--debug", action="store_true",
+                        help="Enable verbose DEBUG logging for connection troubleshooting")
     args = parser.parse_args()
+
+    # Reconfigure logger if --debug is passed
+    if args.debug:
+        setup_agent_logger(debug=True)
+        AGENT_LOG.debug("DEBUG_MODE  Debug logging enabled via --debug flag")
 
     if args.install_deps:
         print("[*] Installing and verifying OpenEDR and security dependencies...")
@@ -468,6 +488,8 @@ def _watchdog_supervisor():
             cmd.extend(["--psk", args.psk])
         if args.no_tls:
             cmd.append("--no-tls")
+        if args.debug:
+            cmd.append("--debug")
 
         try:
             active_proc = subprocess.Popen(cmd)

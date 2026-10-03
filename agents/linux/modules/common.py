@@ -1,10 +1,12 @@
 import hashlib
 import hmac
 import json
+import logging
 import os
 import socket
 import ssl
 import struct
+import sys
 import threading
 from datetime import datetime
 
@@ -12,6 +14,49 @@ try:
     import pwd
 except ImportError:
     pwd = None
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Agent Logging
+# ═══════════════════════════════════════════════════════════════
+
+def setup_agent_logger(debug: bool = False, log_file: str = None) -> logging.Logger:
+    """Configures the agent logger with console output and optional file output."""
+    log = logging.getLogger("edr_agent")
+    level = logging.DEBUG if debug else logging.INFO
+    log.setLevel(level)
+
+    for h in list(log.handlers):
+        log.removeHandler(h)
+
+    console_fmt = logging.Formatter(
+        "[%(asctime)s] [%(levelname)-7s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(level)
+    ch.setFormatter(console_fmt)
+    log.addHandler(ch)
+
+    if log_file:
+        try:
+            fh = logging.FileHandler(log_file, encoding="utf-8")
+            fh.setLevel(level)
+            fh.setFormatter(logging.Formatter(
+                "%(asctime)s  %(levelname)-7s  %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            ))
+            log.addHandler(fh)
+        except Exception:
+            pass
+
+    return log
+
+
+# Initial agent logger — will be reconfigured by apply_agent_config or CLI --debug
+_env_debug = os.environ.get("EDR_DEBUG", "").lower() in ("1", "true", "yes") or \
+             os.environ.get("EDR_LOG_LEVEL", "").upper() == "DEBUG"
+AGENT_LOG = setup_agent_logger(debug=_env_debug)
 
 # ═══════════════════════════════════════════════════════════════
 #  CONFIGURATION & DYNAMIC LOADER — agent_config.json / env vars
@@ -441,6 +486,8 @@ def send_msg(stream, data: dict):
     header  = struct.pack("<I", len(payload))
     with _send_lock:
         stream.sendall(header + payload)
+    AGENT_LOG.debug("SEND_MSG  type=%s  id=%s  size=%d",
+                    data.get("type"), data.get("id", ""), len(payload))
 
 def recv_msg(stream) -> dict:
     """Receive length-prefixed JSON message."""
@@ -458,7 +505,10 @@ def recv_msg(stream) -> dict:
     if length == 0 or length > MAX_MSG_BYTES:
         raise ValueError(f"Invalid message length: {length}")
     raw = recv_exact(length)
-    return json.loads(raw.decode("utf-8", errors="replace"))
+    msg = json.loads(raw.decode("utf-8", errors="replace"))
+    AGENT_LOG.debug("RECV_MSG  type=%s  id=%s  size=%d",
+                    msg.get("type"), msg.get("id", ""), length)
+    return msg
 
 def send_event(stream, subsystem: str, severity: str, title: str, details: str, **kwargs):
     """Emit an asynchronous security alert event to the server."""
@@ -498,39 +548,53 @@ def send_telemetry(stream, category: str, events: list):
 
 def authenticate(stream, psk: str):
     """Perform HMAC challenge/response authentication."""
+    AGENT_LOG.debug("AUTH_WAIT_CHALLENGE  Waiting for server challenge...")
     challenge = recv_msg(stream)
     if challenge.get("type") != "challenge":
+        AGENT_LOG.error("AUTH_FAIL  Expected 'challenge', got '%s'", challenge.get("type"))
         raise ValueError(f"Expected challenge, got {challenge.get('type')}")
     
     nonce_bytes = bytes.fromhex(challenge["nonce"])
     hmac_digest = hmac.new(psk.encode(), nonce_bytes, hashlib.sha256).digest()
+    AGENT_LOG.debug("AUTH_SEND_HMAC  nonce=%s...  hmac=%s...", challenge["nonce"][:16], hmac_digest.hex()[:16])
     send_msg(stream, {"type": "auth", "hmac": hmac_digest.hex()})
     
+    AGENT_LOG.debug("AUTH_WAIT_RESPONSE  Waiting for auth_ok from server...")
     auth_resp = recv_msg(stream)
     if auth_resp.get("type") != "auth_ok":
+        AGENT_LOG.error("AUTH_FAIL  Server rejected authentication (type=%s). Check PSK matches server.", auth_resp.get("type"))
         raise ValueError("Authentication failed — check PSK")
+    AGENT_LOG.debug("AUTH_SUCCESS  Server accepted authentication")
 
 def get_secure_stream(sock, host: str = None, fingerprint: str = None, use_tls: bool = None):
     """Upgrade socket to TLS with optional certificate pinning."""
     active_tls = USE_TLS if use_tls is None else use_tls
     if not active_tls:
+        AGENT_LOG.debug("TLS_SKIP  TLS disabled by configuration")
         return sock
     
     target_host = SERVER_HOST if host is None else host
     target_fp = CERT_FINGERPRINT if fingerprint is None else fingerprint
 
+    AGENT_LOG.debug("TLS_START  server=%s  pinning=%s", target_host, "enabled" if target_fp else "disabled")
     context = ssl.create_default_context()
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
     tls_stream = context.wrap_socket(sock, server_hostname=target_host)
     
+    cipher = tls_stream.cipher()
+    ssl_ver = tls_stream.version()
+    AGENT_LOG.debug("TLS_OK  version=%s  cipher=%s", ssl_ver, cipher[0] if cipher else "Unknown")
+
     if target_fp:
         der = tls_stream.getpeercert(binary_form=True)
         actual_fp = hashlib.sha256(der).hexdigest().upper()
         if actual_fp != target_fp.upper():
+            AGENT_LOG.error("TLS_PIN_FAIL  actual=%s  expected=%s", actual_fp, target_fp)
             tls_stream.close()
             raise ValueError(f"Cert fingerprint mismatch: {actual_fp} != {target_fp}")
+        AGENT_LOG.debug("TLS_PIN_OK  fingerprint=%s...", actual_fp[:16])
     
     return tls_stream
 

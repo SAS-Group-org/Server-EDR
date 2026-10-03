@@ -5,6 +5,54 @@
 $global:SendLock = New-Object System.Object
 $global:EventQueue = [System.Collections.Concurrent.ConcurrentQueue[object]]::new()
 
+# ============================================================
+#  Debug Logging Infrastructure
+# ============================================================
+$global:EDR_Debug = $false
+$global:EDR_LogFile = $null
+
+function Initialize-EDRDebug {
+    param(
+        [switch]$Enable,
+        [string]$LogFile = $null
+    )
+    if ($Enable -or $env:EDR_DEBUG -eq "1" -or $env:EDR_DEBUG -ieq "true") {
+        $global:EDR_Debug = $true
+    }
+    if ($LogFile) {
+        $global:EDR_LogFile = $LogFile
+    }
+}
+
+function Write-DebugLog {
+    param(
+        [string]$Tag,
+        [string]$Message,
+        [ValidateSet("DEBUG", "INFO", "WARNING", "ERROR")]
+        [string]$Level = "DEBUG"
+    )
+    if (-not $global:EDR_Debug -and $Level -eq "DEBUG") { return }
+
+    $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $line = "[$ts] [$($Level.PadRight(7))] $Tag  $Message"
+
+    switch ($Level) {
+        "ERROR"   { Write-Host $line -ForegroundColor Red }
+        "WARNING" { Write-Host $line -ForegroundColor Yellow }
+        "INFO"    { Write-Host $line -ForegroundColor Cyan }
+        default   { Write-Host $line -ForegroundColor DarkGray }
+    }
+
+    if ($global:EDR_LogFile) {
+        try {
+            Add-Content -Path $global:EDR_LogFile -Value $line -ErrorAction SilentlyContinue
+        } catch {}
+    }
+}
+
+# Auto-initialize from environment variable
+Initialize-EDRDebug
+
 function Send-Msg {
     param($Stream, $Data)
     [System.Threading.Monitor]::Enter($global:SendLock)
@@ -15,6 +63,10 @@ function Send-Msg {
         $Stream.Write($len,   0, 4)
         $Stream.Write($bytes, 0, $bytes.Length)
         $Stream.Flush()
+        Write-DebugLog "SEND_MSG" "type=$($Data.type)  size=$($bytes.Length)"
+    } catch {
+        Write-DebugLog "SEND_MSG_FAIL" "type=$($Data.type)  error=$($_.Exception.Message)" -Level "ERROR"
+        throw
     } finally {
         [System.Threading.Monitor]::Exit($global:SendLock)
     }
@@ -26,20 +78,36 @@ function Recv-Msg {
     $got = 0
     while ($got -lt 4) {
         $n = $Stream.Read($hdr, $got, 4 - $got)
-        if ($n -eq 0) { return $null }
+        if ($n -eq 0) {
+            Write-DebugLog "RECV_MSG" "Connection closed (0 bytes header)" -Level "WARNING"
+            return $null
+        }
         $got += $n
     }
     $len = [System.BitConverter]::ToInt32($hdr, 0)
-    if ($len -le 0 -or $len -gt (50 * 1024 * 1024)) { return $null }   # 50 MB cap
+    if ($len -le 0 -or $len -gt (50 * 1024 * 1024)) {
+        Write-DebugLog "RECV_MSG" "Invalid message length: $len" -Level "WARNING"
+        return $null
+    }
     $buf = New-Object byte[] $len
     $got = 0
     while ($got -lt $len) {
         $n = $Stream.Read($buf, $got, $len - $got)
-        if ($n -eq 0) { return $null }
+        if ($n -eq 0) {
+            Write-DebugLog "RECV_MSG" "Connection closed mid-payload (got $got of $len)" -Level "WARNING"
+            return $null
+        }
         $got += $n
     }
     $json = [System.Text.Encoding]::UTF8.GetString($buf)
-    try { return $json | ConvertFrom-Json } catch { return $null }
+    try {
+        $msg = $json | ConvertFrom-Json
+        Write-DebugLog "RECV_MSG" "type=$($msg.type)  size=$len"
+        return $msg
+    } catch {
+        Write-DebugLog "RECV_MSG" "JSON parse error: $($_.Exception.Message)" -Level "WARNING"
+        return $null
+    }
 }
 
 function Send-Event {
@@ -110,13 +178,23 @@ function Get-SecureStream {
     param($TcpClient, [string]$ServerHost, [string]$CertThumbprint, [bool]$UseTLS = $true)
 
     $rawStream = $TcpClient.GetStream()
-    if (-not $UseTLS) { return $rawStream }
+    if (-not $UseTLS) {
+        Write-DebugLog "TLS_SKIP" "TLS disabled by configuration"
+        return $rawStream
+    }
+
+    Write-DebugLog "TLS_START" "server=$ServerHost  pinning=$( if ($CertThumbprint) { 'enabled' } else { 'disabled' } )"
 
     $validationCallback = {
         param($sender, $certificate, $chain, $sslPolicyErrors)
         if ($CertThumbprint -ne "") {
             $actual = $certificate.GetCertHashString("SHA256")
-            return ($actual -ieq $CertThumbprint)
+            if ($actual -ieq $CertThumbprint) {
+                Write-DebugLog "TLS_PIN_OK" "fingerprint=$($actual.Substring(0,16))..."
+                return $true
+            }
+            Write-DebugLog "TLS_PIN_FAIL" "actual=$actual  expected=$CertThumbprint" -Level "ERROR"
+            return $false
         }
         return $true
     }
@@ -126,8 +204,10 @@ function Get-SecureStream {
     )
     try {
         $sslStream.AuthenticateAsClient($ServerHost)
+        Write-DebugLog "TLS_OK" "version=$($sslStream.SslProtocol)  cipher=$($sslStream.CipherAlgorithm)"
         return $sslStream
     } catch {
+        Write-DebugLog "TLS_FAIL" "error=$($_.Exception.Message)" -Level "ERROR"
         $sslStream.Dispose()
         throw $_
     }
