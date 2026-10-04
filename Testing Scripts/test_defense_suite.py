@@ -23,7 +23,10 @@ import socket
 import threading
 import struct
 
-_LINUX_AGENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agents", "linux")
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+_LINUX_AGENT_DIR = os.path.join(_REPO_ROOT, "agents", "linux")
 if _LINUX_AGENT_DIR not in sys.path:
     sys.path.insert(0, _LINUX_AGENT_DIR)
 
@@ -697,10 +700,10 @@ class TestEndpointDefense(unittest.TestCase):
         env["RAT_USE_TLS"] = "0"
         env["RAT_RECONNECT_SECS"] = "2"
         
-        agent_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agents", "linux", "agent_core.py")
+        agent_script = os.path.join(_REPO_ROOT, "agents", "linux", "agent_core.py")
         proc = subprocess.Popen(
             [sys.executable, agent_script, "--no-watchdog"],
-            cwd=os.path.dirname(os.path.abspath(__file__)),
+            cwd=_REPO_ROOT,
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -801,7 +804,7 @@ class TestEndpointDefense(unittest.TestCase):
         from Server import EDRServer, Agent
         
         nonce = "test_nonce_12345678abcdef"
-        agent_path = os.path.join(os.path.dirname(__file__), "agents", "linux", "agent_core.py")
+        agent_path = os.path.join(_REPO_ROOT, "agents", "linux", "agent_core.py")
         status, output = cmd_attest(nonce, agent_path)
         self.assertEqual(status, "ok")
         data = json.loads(output)
@@ -907,7 +910,7 @@ class TestEndpointDefense(unittest.TestCase):
     # 14. Windows Agent Pure ASCII & AST Validity
     def test_windows_agent_pure_ascii(self):
         """Verifies modular Windows agent files contain 0 non-ASCII bytes to prevent CP1252 encoding traps."""
-        win_dir = os.path.join(os.path.dirname(__file__), "agents", "windows")
+        win_dir = os.path.join(_REPO_ROOT, "agents", "windows")
         ps_files = []
         for root, _, files in os.walk(win_dir):
             for f in files:

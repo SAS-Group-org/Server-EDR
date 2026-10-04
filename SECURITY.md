@@ -4,9 +4,9 @@
 
 | Version | Supported          | Security Updates |
 | :---    | :---:              | :---             |
-| 2.0.x   | :white_check_mark: | Active support   |
-| 1.1.x   | :white_check_mark: | Critical patches only |
-| < 1.1   | :x:                | Unsupported      |
+| 1.1.x   | :white_check_mark: | Active support   |
+| 1.0.x   | :white_check_mark: | Critical patches only |
+| < 1.0   | :x:                | Unsupported      |
 
 ---
 

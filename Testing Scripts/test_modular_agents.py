@@ -9,6 +9,11 @@ import os
 import subprocess
 import sys
 import time
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 from Server import EDRServer
 
 def run_test_agent(name, launch_cmd, script_rel_path):
@@ -32,7 +37,7 @@ def run_test_agent(name, launch_cmd, script_rel_path):
     env["RAT_USE_TLS"] = "0"
     env["RAT_RECONNECT_SECS"] = "2"
 
-    cwd = os.path.dirname(os.path.abspath(__file__))
+    cwd = REPO_ROOT
     proc = subprocess.Popen(
         launch_cmd,
         cwd=cwd,
@@ -164,7 +169,7 @@ class TestModularAgents(unittest.TestCase):
 
     def test_modular_agents_live_communication(self):
         """Validates that modular Windows and Linux agents connect, authenticate, and execute defense commands."""
-        cwd = os.path.dirname(os.path.abspath(__file__))
+        cwd = REPO_ROOT
         win_agent = os.path.join(cwd, "agents", "windows", "Agent-Core.ps1")
         win_ok = run_test_agent(
             "Modular Windows Agent (Agent-Core.ps1)",
@@ -183,7 +188,7 @@ class TestModularAgents(unittest.TestCase):
 
     def test_modular_agent_packaging_and_configuration(self):
         """Issue #29: Validates packaging, injected configuration, and standalone execution of modular agents."""
-        cwd = os.path.dirname(os.path.abspath(__file__))
+        cwd = REPO_ROOT
 
         # 1. Package Linux Modular Agent
         linux_tar = os.path.join(self.temp_dir.name, "mod-linux.tar.gz")

@@ -13,6 +13,10 @@ import unittest
 import subprocess
 from unittest.mock import MagicMock, patch
 
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 from Server import build_agent_package, ServerConfig, DEFAULT_PORT
 
 

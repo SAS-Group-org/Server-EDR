@@ -3,11 +3,16 @@
 Test script to verify modular Agent-Core.ps1 connects to EDRServer,
 authenticates with HMAC, and handles defense commands.
 """
+import os
+import sys
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 import subprocess
 import socket
 import time
-import os
-import sys
 import json
 from Server import EDRServer
 
@@ -36,7 +41,7 @@ def main():
     print(f"[*] Launching {agent_ps1} via powershell...")
     proc = subprocess.Popen(
         ["powershell", "-ExecutionPolicy", "Bypass", "-File", agent_ps1],
-        cwd=os.path.dirname(os.path.abspath(__file__)),
+        cwd=REPO_ROOT,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -55,6 +60,7 @@ def main():
 
         if not agent:
             print(f"[!] {agent_ps1} failed to connect within timeout")
+            proc.kill()
             stdout, stderr = proc.communicate(timeout=2)
             print(f"STDOUT: {stdout}")
             print(f"STDERR: {stderr}")
@@ -167,7 +173,7 @@ class TestWindowsAgentSuite(unittest.TestCase):
 
     def test_windows_agent_installation_and_runtime_validation(self):
         """Issue #30: Validates Windows service installer DryRun and runtime configuration validation."""
-        cwd = os.path.dirname(os.path.abspath(__file__))
+        cwd = REPO_ROOT
         install_script = os.path.join(cwd, "agents", "windows", "Service", "Install-Service.ps1")
         core_script = os.path.join(cwd, "agents", "windows", "Agent-Core.ps1")
 

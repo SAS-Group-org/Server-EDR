@@ -491,13 +491,30 @@ def send_msg(stream, data: dict):
 
 def recv_msg(stream) -> dict:
     """Receive length-prefixed JSON message."""
+    total_read = 0
+
     def recv_exact(n: int) -> bytes:
+        nonlocal total_read
         buf = b""
         while len(buf) < n:
-            chunk = stream.recv(n - len(buf))
+            try:
+                chunk = stream.recv(n - len(buf))
+            except (socket.timeout, TimeoutError):
+                if total_read == 0 and len(buf) == 0:
+                    raise
+                raise ConnectionError(
+                    f"Framing desynchronization: socket timeout during partial message read "
+                    f"({total_read + len(buf)} bytes received, waiting for {n})"
+                )
             if not chunk:
+                if total_read > 0 or len(buf) > 0:
+                    raise ConnectionError(
+                        f"Connection closed unexpectedly mid-message "
+                        f"({total_read + len(buf)} bytes received)"
+                    )
                 raise ConnectionError("Connection closed")
             buf += chunk
+            total_read += len(chunk)
         return buf
     
     hdr = recv_exact(4)

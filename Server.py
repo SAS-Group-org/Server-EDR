@@ -742,7 +742,11 @@ def load_authoritative_checksums() -> Dict[str, str]:
                     for line in f:
                         parts = line.strip().split()
                         if len(parts) >= 2:
-                            hashes[parts[1]] = parts[0].lower()
+                            h = parts[0].lower()
+                            p = parts[1].strip()
+                            hashes[p] = h
+                            hashes[p.replace("\\", "/")] = h
+                            hashes[os.path.basename(p)] = h
                 break
             except Exception:
                 pass
@@ -1307,6 +1311,8 @@ def verify_jwt_token(token: str, secret: str) -> Optional[dict]:
         rem_p = len(p_b64) % 4
         p_pad = p_b64 + ("=" * (4 - rem_p) if rem_p else "")
         payload = json.loads(base64.urlsafe_b64decode(p_pad.encode("utf-8")).decode("utf-8"))
+        if not isinstance(payload, dict):
+            return None
         if payload.get("exp", 0) < int(time.time()):
             return None
         return payload

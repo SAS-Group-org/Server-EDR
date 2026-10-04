@@ -581,4 +581,4 @@ function Test-ServerConnectivity {
     }
 }
 
-Export-ModuleMember -Function Send-Msg, Recv-Msg, Send-Event, Send-Telemetry, Compute-HMAC, Get-SecureStream, Get-LocalIP, Get-MaskedSecret, Validate-AgentConfig, Load-AgentConfig, Save-AgentConfig, Test-ServerConnectivity -Variable SendLock, EventQueue
+Export-ModuleMember -Function Send-Msg, Recv-Msg, Send-Event, Send-Telemetry, Compute-HMAC, Get-SecureStream, Get-LocalIP, Get-MaskedSecret, Validate-AgentConfig, Load-AgentConfig, Save-AgentConfig, Test-ServerConnectivity, Initialize-EDRDebug, Write-DebugLog -Variable SendLock, EventQueue, EDR_Debug, EDR_LogFile

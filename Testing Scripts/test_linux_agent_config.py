@@ -25,8 +25,10 @@ import tarfile
 from unittest.mock import patch
 
 # Add agents/linux to sys.path
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LINUX_AGENT_DIR = os.path.join(BASE_DIR, "agents", "linux")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+LINUX_AGENT_DIR = os.path.join(REPO_ROOT, "agents", "linux")
 if LINUX_AGENT_DIR not in sys.path:
     sys.path.insert(0, LINUX_AGENT_DIR)
 
